@@ -13,7 +13,16 @@
 - [交付路线与验收清单](./docs/03-delivery-roadmap.md)
 - [Agent Learning Hub 启发总结](./docs/04-agent-learning-hub-insights.md)
 - [Agent Harness 基础知识与实现思路](./docs/05-agent-harness-basics.md)
+- [构建验证记录](./docs/06-build-verification.md)
 - [题目 Markdown 原文](./output/l2-agent-tui-task.md)
+
+## Build
+
+```bash
+cmake -S . -B build
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
 
 ## 目标
 
