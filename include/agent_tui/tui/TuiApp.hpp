@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "agent_tui/config/ConfigLoader.hpp"
+#include "agent_tui/llm/ProviderFactory.hpp"
 #include "agent_tui/session/SessionHistory.hpp"
 #include "agent_tui/tui/TuiConfig.hpp"
 
@@ -13,6 +15,8 @@ namespace agent_tui {
 
 class TuiApp {
 public:
+    TuiApp() : config_(ConfigLoader::load()) {}
+
     int run() {
         install_signal_handler();
         add_system_message("Welcome to agent_tui. Type /help for commands.");
@@ -33,9 +37,7 @@ public:
             if (line[0] == '/') {
                 handle_command(line);
             } else {
-                history_.add(SessionEvent::user_input(line));
-                add_chat_line("user", line);
-                add_system_message("AgentLoop is not wired yet. This input was recorded in SessionHistory.");
+                handle_user_input(line);
             }
 
             if (running_) {
@@ -83,6 +85,10 @@ public:
         }
         if (command == "/api") {
             handle_api_command(input);
+            return true;
+        }
+        if (command == "/config") {
+            handle_config_command(input);
             return true;
         }
         if (command == "/interrupt") {
@@ -133,6 +139,24 @@ private:
         std::signal(SIGINT, signal_handler);
     }
 
+    void handle_user_input(const std::string& line) {
+        history_.add(SessionEvent::user_input(line));
+        add_chat_line("user", line);
+
+        auto provider = ProviderFactory::create(config_);
+        const auto response = provider->chat({Message{Role::User, line, {}}});
+        if (response.type == ProviderResponseType::Text) {
+            add_chat_line("assistant", response.text);
+            history_.add(SessionEvent::assistant_message(response.text));
+            return;
+        }
+        if (response.type == ProviderResponseType::Error) {
+            add_error_message(response.error);
+            return;
+        }
+        add_system_message("Provider returned tool_calls, but AgentLoop is not wired into TUI yet.");
+    }
+
     void render() {
         sync_global_interrupt();
         *output_ << "\n";
@@ -155,7 +179,7 @@ private:
             }
         }
         *output_ << "------------------------------------------------------------\n";
-        *output_ << " Commands: /help /status /clear /model /api /interrupt /skills /exit\n";
+        *output_ << " Commands: /help /status /clear /model /api /config /interrupt /skills /exit\n";
         *output_ << "> ";
     }
 
@@ -170,12 +194,16 @@ private:
             "  /status                       show runtime status\n"
             "  /clear                        clear chat and session history\n"
             "  /model [name]                 show or set model\n"
-            "  /api                          show api config\n"
+            "  /api                          show runtime api config\n"
             "  /api provider <name>          set provider\n"
             "  /api base <url>               set API base URL\n"
             "  /api key-env <ENV_NAME>       set API key environment variable name\n"
             "  /api timeout <seconds>        set timeout\n"
             "  /api max-loops <n>            set max agent loops\n"
+            "  /config show                  show redacted loaded config\n"
+            "  /config paths                 show user/project config paths\n"
+            "  /config init user             create ~/.agent_tui/config.toml\n"
+            "  /config reload                reload default + user + project config\n"
             "  /interrupt                    request interrupt\n"
             "  /skills                       show skill runtime status\n"
             "  /exit                         quit");
@@ -233,6 +261,42 @@ private:
         add_system_message("unknown /api field: " + field);
     }
 
+    void handle_config_command(std::istringstream& input) {
+        std::string subcommand;
+        input >> subcommand;
+
+        if (subcommand.empty() || subcommand == "show") {
+            add_system_message(config_.summary());
+            return;
+        }
+        if (subcommand == "paths") {
+            std::ostringstream out;
+            out << "user_config: " << ConfigLoader::user_config_path().generic_string() << '\n';
+            out << "project_config: " << ConfigLoader::project_config_path().generic_string();
+            add_system_message(out.str());
+            return;
+        }
+        if (subcommand == "init") {
+            std::string scope;
+            input >> scope;
+            if (scope != "user") {
+                add_system_message("usage: /config init user");
+                return;
+            }
+            const bool ok = ConfigLoader::init_user_config(false);
+            add_system_message(ok ? "user config ready: " + ConfigLoader::user_config_path().generic_string()
+                                  : "failed to create user config");
+            return;
+        }
+        if (subcommand == "reload") {
+            config_ = ConfigLoader::load();
+            add_system_message("config reloaded\n" + config_.summary());
+            return;
+        }
+
+        add_system_message("unknown /config command: " + subcommand);
+    }
+
     static int parse_positive_int(const std::string& value, int fallback) {
         try {
             const auto parsed = std::stoi(value);
@@ -245,6 +309,11 @@ private:
     void add_system_message(const std::string& message) {
         chat_lines_.push_back("system: " + message);
         history_.add(SessionEvent::assistant_message(message));
+    }
+
+    void add_error_message(const std::string& message) {
+        chat_lines_.push_back("error: " + message);
+        history_.add(SessionEvent::error(message));
     }
 
     void add_chat_line(const std::string& role, const std::string& message) {
