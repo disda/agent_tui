@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 
 #include "agent_tui/config/Config.hpp"
 #include "agent_tui/llm/EchoProvider.hpp"
