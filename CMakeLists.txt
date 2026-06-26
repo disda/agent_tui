@@ -21,7 +21,11 @@ target_link_libraries(agent_tui_file_tools_tests PRIVATE agent_tui_core)
 add_executable(agent_tui_permission_gate_tests tests/test_permission_gate.cpp)
 target_link_libraries(agent_tui_permission_gate_tests PRIVATE agent_tui_core)
 
+add_executable(agent_tui_shell_tool_tests tests/test_shell_tool.cpp)
+target_link_libraries(agent_tui_shell_tool_tests PRIVATE agent_tui_core)
+
 enable_testing()
 add_test(NAME agent_tui_tests COMMAND agent_tui_tests)
 add_test(NAME agent_tui_file_tools_tests COMMAND agent_tui_file_tools_tests)
 add_test(NAME agent_tui_permission_gate_tests COMMAND agent_tui_permission_gate_tests)
+add_test(NAME agent_tui_shell_tool_tests COMMAND agent_tui_shell_tool_tests)
