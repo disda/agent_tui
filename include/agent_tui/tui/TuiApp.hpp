@@ -19,7 +19,8 @@ public:
         render();
 
         std::string line;
-        while (running_ && std::getline(input_, line)) {
+        while (running_ && std::getline(*input_, line)) {
+            sync_global_interrupt();
             if (interrupted_) {
                 add_system_message("Interrupt flag is set. Use /status to inspect, /clear to reset history, or continue typing.");
             }
@@ -101,6 +102,7 @@ public:
     const TuiConfig& config() const { return config_; }
     const SessionHistory& history() const { return history_; }
     bool interrupted() const { return interrupted_; }
+    bool running() const { return running_; }
 
     void request_interrupt() {
         interrupted_ = true;
@@ -118,41 +120,11 @@ public:
     }
 
     void set_streams(std::istream& input, std::ostream& output) {
-        input_ = input;
-        output_ = output;
+        input_ = &input;
+        output_ = &output;
     }
 
 private:
-    class InputRef {
-    public:
-        InputRef() : stream_(&std::cin) {}
-        explicit InputRef(std::istream& stream) : stream_(&stream) {}
-        operator std::istream&() { return *stream_; }
-        InputRef& operator=(std::istream& stream) {
-            stream_ = &stream;
-            return *this;
-        }
-    private:
-        std::istream* stream_;
-    };
-
-    class OutputRef {
-    public:
-        OutputRef() : stream_(&std::cout) {}
-        explicit OutputRef(std::ostream& stream) : stream_(&stream) {}
-        template <typename T>
-        OutputRef& operator<<(const T& value) {
-            (*stream_) << value;
-            return *this;
-        }
-        OutputRef& operator=(std::ostream& stream) {
-            stream_ = &stream;
-            return *this;
-        }
-    private:
-        std::ostream* stream_;
-    };
-
     static void signal_handler(int) {
         global_interrupted_ = true;
     }
@@ -163,32 +135,32 @@ private:
 
     void render() {
         sync_global_interrupt();
-        output_ << "\n";
-        output_ << "============================================================\n";
-        output_ << " agent_tui  |  status: " << (interrupted_ ? "INTERRUPTED" : "IDLE") << "\n";
-        output_ << "------------------------------------------------------------\n";
-        output_ << " provider=" << config_.provider
-                << " model=" << config_.model
-                << " api_base=" << (config_.api_base.empty() ? "<not set>" : config_.api_base)
-                << " key_env=" << (config_.api_key_env.empty() ? "<not set>" : config_.api_key_env)
-                << "\n";
-        output_ << "------------------------------------------------------------\n";
+        *output_ << "\n";
+        *output_ << "============================================================\n";
+        *output_ << " agent_tui  |  status: " << (interrupted_ ? "INTERRUPTED" : "IDLE") << "\n";
+        *output_ << "------------------------------------------------------------\n";
+        *output_ << " provider=" << config_.provider
+                 << " model=" << config_.model
+                 << " api_base=" << (config_.api_base.empty() ? "<not set>" : config_.api_base)
+                 << " key_env=" << (config_.api_key_env.empty() ? "<not set>" : config_.api_key_env)
+                 << "\n";
+        *output_ << "------------------------------------------------------------\n";
         if (chat_lines_.empty()) {
-            output_ << " Chat: <empty>\n";
+            *output_ << " Chat: <empty>\n";
         } else {
-            output_ << " Chat:\n";
+            *output_ << " Chat:\n";
             const std::size_t start = chat_lines_.size() > 12 ? chat_lines_.size() - 12 : 0;
             for (std::size_t i = start; i < chat_lines_.size(); ++i) {
-                output_ << "  " << chat_lines_[i] << "\n";
+                *output_ << "  " << chat_lines_[i] << "\n";
             }
         }
-        output_ << "------------------------------------------------------------\n";
-        output_ << " Commands: /help /status /clear /model /api /interrupt /skills /exit\n";
-        output_ << "> ";
+        *output_ << "------------------------------------------------------------\n";
+        *output_ << " Commands: /help /status /clear /model /api /interrupt /skills /exit\n";
+        *output_ << "> ";
     }
 
     void render_prompt_only() {
-        output_ << "> ";
+        *output_ << "> ";
     }
 
     void show_help() {
@@ -281,8 +253,8 @@ private:
 
     inline static volatile std::sig_atomic_t global_interrupted_ = 0;
 
-    InputRef input_;
-    OutputRef output_;
+    std::istream* input_ = &std::cin;
+    std::ostream* output_ = &std::cout;
     TuiConfig config_;
     SessionHistory history_;
     std::vector<std::string> chat_lines_;
