@@ -15,5 +15,9 @@ target_link_libraries(agent_tui PRIVATE agent_tui_core)
 add_executable(agent_tui_tests tests/test_agent_runner.cpp)
 target_link_libraries(agent_tui_tests PRIVATE agent_tui_core)
 
+add_executable(agent_tui_file_tools_tests tests/test_file_tools.cpp)
+target_link_libraries(agent_tui_file_tools_tests PRIVATE agent_tui_core)
+
 enable_testing()
 add_test(NAME agent_tui_tests COMMAND agent_tui_tests)
+add_test(NAME agent_tui_file_tools_tests COMMAND agent_tui_file_tools_tests)
