@@ -10,11 +10,15 @@ struct Config {
     std::string provider = "mock";
     std::string model = "mock-model";
     std::string api_base;
+    std::string api_key;
     std::string api_key_env;
     int timeout_seconds = 60;
     int max_loops = 8;
 
     std::string api_key_status() const {
+        if (!api_key.empty()) {
+            return "<inline set>";
+        }
         if (api_key_env.empty()) {
             return "<not set>";
         }
@@ -30,6 +34,7 @@ struct Config {
         out << "provider: " << provider << '\n';
         out << "model: " << model << '\n';
         out << "api_base: " << (api_base.empty() ? "<not set>" : api_base) << '\n';
+        out << "api_key: " << (api_key.empty() ? "<not set>" : "<inline set>") << '\n';
         out << "api_key_env: " << (api_key_env.empty() ? "<not set>" : api_key_env) << '\n';
         out << "api_key_status: " << api_key_status() << '\n';
         out << "timeout_seconds: " << timeout_seconds << '\n';
@@ -40,10 +45,11 @@ struct Config {
     static std::string example_toml() {
         return
             "# agent_tui user configuration\n"
-            "# Store only the environment variable name here. Do not store real API keys.\n"
+            "# For local-only config, api_key may be set directly. api_key_env is safer for shared configs.\n"
             "provider = \"mock\"\n"
             "model = \"mock-model\"\n"
             "api_base = \"\"\n"
+            "api_key = \"\"\n"
             "api_key_env = \"OPENAI_API_KEY\"\n"
             "timeout_seconds = 60\n"
             "max_loops = 8\n";

@@ -36,6 +36,14 @@ public:
         return workspace / ".agent_tui" / "config.toml";
     }
 
+    static std::filesystem::path project_state_path(const std::filesystem::path& workspace = std::filesystem::current_path()) {
+        return workspace / ".agent_tui";
+    }
+
+    static std::filesystem::path project_sessions_path(const std::filesystem::path& workspace = std::filesystem::current_path()) {
+        return project_state_path(workspace) / "sessions";
+    }
+
     static Config load(const std::filesystem::path& workspace = std::filesystem::current_path()) {
         return load_from_paths(user_config_path(), project_config_path(workspace));
     }
@@ -49,6 +57,16 @@ public:
 
     static bool init_user_config(bool overwrite = false) {
         return write_example(user_config_path(), overwrite);
+    }
+
+    static bool init_project_config(const std::filesystem::path& workspace = std::filesystem::current_path(), bool overwrite = false) {
+        return write_example(project_config_path(workspace), overwrite);
+    }
+
+    static bool ensure_project_state(const std::filesystem::path& workspace = std::filesystem::current_path()) {
+        std::filesystem::create_directories(project_sessions_path(workspace));
+        return std::filesystem::exists(project_state_path(workspace)) &&
+               std::filesystem::exists(project_sessions_path(workspace));
     }
 
     static bool write_example(const std::filesystem::path& path, bool overwrite = false) {
@@ -104,6 +122,10 @@ private:
         }
         if (key == "api_base") {
             config.api_base = value;
+            return;
+        }
+        if (key == "api_key") {
+            config.api_key = value;
             return;
         }
         if (key == "api_key_env") {

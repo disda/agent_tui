@@ -16,4 +16,7 @@ cmake-build-*/
 *.dylib
 *.so
 .DS_Store
+output/
+.agent_tui/sessions/
+.agent_tui/config.toml
 .agent-tui/sessions/

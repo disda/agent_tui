@@ -53,9 +53,30 @@ void test_project_config_overrides_user_config() {
 void test_api_key_is_not_exposed() {
     Config config;
     config.api_key_env = "SECRET_TOKEN_ENV";
+    config.api_key = "sk-test-secret-value";
     const auto summary = config.summary();
     assert(summary.find("SECRET_TOKEN_ENV") != std::string::npos);
     assert(summary.find("sk-test-secret-value") == std::string::npos);
+}
+
+void test_inline_api_key_can_be_loaded_from_project_config() {
+    const auto root = make_test_root();
+    const auto project_config = root / "project" / ".agent_tui" / "config.toml";
+
+    write_file(project_config,
+               "provider = \"openai-compatible\"\n"
+               "model = \"gpt-5.4-mini\"\n"
+               "api_base = \"http://127.0.0.1:1455/v1\"\n"
+               "api_key = \"sk-test-inline-key\"\n");
+
+    auto config = ConfigLoader::load_from_paths(root / "missing.toml", project_config);
+    assert(config.provider == "openai-compatible");
+    assert(config.model == "gpt-5.4-mini");
+    assert(config.api_key == "sk-test-inline-key");
+    assert(config.api_key_status() == "<inline set>");
+    assert(config.summary().find("sk-test-inline-key") == std::string::npos);
+
+    std::filesystem::remove_all(root);
 }
 
 void test_write_example_config() {
@@ -66,6 +87,14 @@ void test_write_example_config() {
     auto config = ConfigLoader::load_from_paths(path, root / "missing.toml");
     assert(config.provider == "mock");
     assert(config.model == "mock-model");
+    std::filesystem::remove_all(root);
+}
+
+void test_init_project_config_creates_agent_tui_directory() {
+    const auto root = make_test_root();
+    assert(ConfigLoader::init_project_config(root, false));
+    assert(std::filesystem::exists(root / ".agent_tui"));
+    assert(std::filesystem::exists(root / ".agent_tui" / "config.toml"));
     std::filesystem::remove_all(root);
 }
 
@@ -80,7 +109,7 @@ void test_provider_factory_mock_chat() {
 
 void test_provider_factory_placeholder_for_unknown_provider() {
     Config config;
-    config.provider = "openai-compatible";
+    config.provider = "unknown-provider";
     auto provider = ProviderFactory::create(config);
     auto response = provider->chat({Message{Role::User, "hi", {}}});
     assert(response.type == ProviderResponseType::Error);
@@ -92,7 +121,9 @@ void test_provider_factory_placeholder_for_unknown_provider() {
 int main() {
     test_project_config_overrides_user_config();
     test_api_key_is_not_exposed();
+    test_inline_api_key_can_be_loaded_from_project_config();
     test_write_example_config();
+    test_init_project_config_creates_agent_tui_directory();
     test_provider_factory_mock_chat();
     test_provider_factory_placeholder_for_unknown_provider();
     return 0;

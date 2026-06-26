@@ -37,9 +37,25 @@
 ## Build
 
 ```bash
-cmake -S . -B build
-cmake --build build
-ctest --test-dir build --output-on-failure
+./scripts/build.sh
+```
+
+On Windows PowerShell:
+
+```powershell
+./scripts/build.ps1
+```
+
+Useful options:
+
+```bash
+./scripts/build.sh --release --clean
+./scripts/build.sh --build-dir build-release --config Release --no-tests
+```
+
+```powershell
+./scripts/build.ps1 -Release -Clean
+./scripts/build.ps1 -BuildDir build-release -Config Release -NoTests
 ```
 
 ## Run
@@ -180,3 +196,7 @@ Permission Gate 拦截危险操作
 - `cpp_project`
 - `tui_agent`
 - `kwoa_cli`
+
+## Project State
+
+The TUI creates `./.agent_tui/sessions/` on startup. Inside the TUI, run `/config init project` to create `./.agent_tui/config.toml`.
