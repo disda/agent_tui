@@ -2,7 +2,7 @@
 
 > 当前项目方向：纯 C++ 实现一个本地 TUI Coding Agent，并采用 kwoa-cli 风格 Skills Runtime 组织能力。
 >
-> 当前最新判断：项目已经有 AgentRunner、文件工具、权限系统、SessionHistory、TUI-lite、OpenAI-compatible 文本对话、Local Intent Router 和基础测试。接下来要重点补“真实工具调用闭环”和“桌面/文件管理类任务”。
+> 当前最新判断：项目已经有 AgentRunner、文件工具、权限系统、SessionHistory、TUI-lite、OpenAI-compatible 文本对话、Local Intent Router、安全本地文件管理功能类和基础测试。接下来要把桌面文件意图接到这些功能类，并继续补真实 tool_calls 闭环。
 
 ## 0. 当前状态快照
 
@@ -22,6 +22,7 @@
 - [x] 类似 `.codex` 的 TOML 配置目录。
 - [x] 用户级 / 项目级配置，项目级覆盖用户级。
 - [x] Local Intent Router。
+- [x] Safe File Manager 功能类：KnownPaths / AllowedRoots / FileManagerTools。
 - [x] `tests/test_agent_runner.cpp`。
 - [x] `tests/test_file_tools.cpp`。
 - [x] `tests/test_permission_gate.cpp`。
@@ -32,6 +33,7 @@
 - [x] `tests/test_config_loader.cpp`。
 - [x] `tests/test_openai_compatible_provider.cpp`。
 - [x] `tests/test_intent_classifier.cpp`。
+- [x] `tests/test_file_manager_tools.cpp`。
 - [x] `deliverables/` 目录。
 
 ## 1. 当前最大问题
@@ -46,16 +48,26 @@
 找出最近修改的文档
 ```
 
-这些任务和“仓库内 Coding Agent”不同，涉及 **用户主目录 / 桌面 / 下载目录 / 图片目录** 等 workspace 外路径。当前工具的 `WorkspaceGuard` 主要限制在项目 workspace 内，因此：
+底层功能类已经有第一版：
 
-- [ ] 不能安全访问 `Desktop`。
-- [ ] 不能安全访问 `Downloads`。
-- [ ] 不能移动真实用户文件。
-- [ ] 不能按扩展名批量分类图片。
-- [ ] 不能做 dry-run 预览。
-- [ ] 不能在 TUI 中清晰展示“即将移动哪些文件”。
+```text
+KnownPaths
+AllowedRoots
+list_path
+make_dir
+move_file
+move_files_by_extension
+```
 
-因此下一步优先级需要从“只做代码仓库工具”扩展为“安全本地文件管理工具”。
+但这些功能还没有完整接到 TUI / Local Intent Router，所以用户输入自然语言时仍不能直接完成桌面整理任务。
+
+当前剩余缺口：
+
+- [ ] TUI 中 `列出桌面文件` 还没路由到 `list_path desktop`。
+- [ ] TUI 中 `移动图片到新文件夹` 还没生成 dry-run 计划。
+- [ ] `allowed_roots` 还没有配置化。
+- [ ] 批量移动计划还没有 PermissionPanel 展示。
+- [ ] 移动执行还没有审计日志增强。
 
 ## 2. 作业要求对齐状态
 
@@ -67,8 +79,9 @@
 | 仓库工具：目录浏览、文件读取、文件匹配、内容搜索 | 已完成 | 后续优化编码检测、大文件处理 |
 | 文件写入或编辑 | 已完成 | 后续可增强 diff/patch、AST 级编辑 |
 | Shell 命令执行 | 已完成基础版 | POSIX 支持 timeout；Windows 支持 `_popen` 简版，后续补 timeout 强杀 |
-| 权限控制：写文件、编辑、Shell 必须确认 | 已完成核心机制 | Local Intent Router 对 shell 已二次确认；后续 TUI 中需要可视化 Permission Panel |
-| 用户拒绝授权不得执行，拒绝结果进入上下文 | 已完成核心机制 | PermissionGate / Local Intent Router 均记录拒绝结果 |
+| 安全本地文件管理 | 已完成功能类基础版 | 已有 KnownPaths / AllowedRoots / list_path / make_dir / move_file / move_files_by_extension；还缺 TUI 路由和 allowed_roots 配置化 |
+| 权限控制：写文件、编辑、Shell 必须确认 | 已完成核心机制 | 文件管理工具声明 Confirm；后续 TUI 中需要可视化 Permission Panel |
+| 用户拒绝授权不得执行，拒绝结果进入上下文 | 已完成核心机制 | PermissionGate / Local Intent Router 均记录拒绝结果；后续补文件移动审计详情 |
 | WPS CodingPlan 协议 | 未完成 | 需要 `CodingPlanProvider`、工具调用解析、流式输出、超时、重试 |
 | 多轮会话上下文管理 | 部分完成 | 已有 SessionHistory / AuditLog；还缺 AgentLoop 多轮会话组织和 TUI 展示 |
 | 用户级 / 项目级配置，项目级优先 | 已完成基础版 | 后续可增强配置保存命令、allowed_roots 配置 |
@@ -76,54 +89,49 @@
 | 不使用第三方 Agent SDK / Framework | 符合 | 继续保持核心 AgentLoop、工具、权限、会话自行实现 |
 | `.ai_history/logs/` 必须提交 | 已完成并持续补充 | 每轮关键设计继续补日志 |
 | `deliverables/` 可运行验证产物和截图 | 部分完成 | 目录和计划已创建，还缺真实运行日志和关键截图 |
-| 测试至少覆盖 Agent 主循环、工具调用结果回传、权限确认与拒绝、配置优先级、Mock LLM Provider | 基础覆盖完成 | 已覆盖 AgentRunner、工具、权限、MockProvider、会话记录、TUI 命令、配置优先级、IntentClassifier；后续补真实 Provider tool_calls、桌面文件管理测试 |
+| 测试至少覆盖 Agent 主循环、工具调用结果回传、权限确认与拒绝、配置优先级、Mock LLM Provider | 基础覆盖完成 | 已覆盖 AgentRunner、工具、权限、MockProvider、会话记录、TUI 命令、配置优先级、IntentClassifier、FileManagerTools；后续补真实 Provider tool_calls、桌面意图测试 |
 
 ## 3. 下一步优先级
 
-### P0. 安全本地文件管理能力
+### P0-A. 将桌面文件意图接到 FileManagerTools
 
-目标：支持类似下面的任务：
+底层功能类已完成，下一步要让 TUI 能直接执行这些任务。
 
-```text
-列出桌面文件
-把桌面图片移动到 Pictures/桌面图片
-把下载目录里的 PDF 移到 Documents/PDF
-创建一个新文件夹并移动所有 PNG 图片进去
-```
+- [ ] `docs/27-desktop-file-intents-design.md`。
+- [ ] 扩展 `IntentType`：`ListDesktop`、`ListDownloads`、`MoveImagesToFolder`。
+- [ ] `列出桌面文件` -> `list_path desktop`。
+- [ ] `列出下载目录` -> `list_path downloads`。
+- [ ] `移动图片到新文件夹` -> `move_files_by_extension` dry-run。
+- [ ] `把桌面 png 移到 xxx` -> source=desktop, ext=png, target=xxx。
+- [ ] TUI 显示 dry-run 计划。
+- [ ] 用户确认后 execute=true。
+- [ ] `tests/test_local_desktop_intents.cpp`。
 
-需要新增：
+### P0-B. FileManagerTools 增强
 
-- [ ] `docs/25-file-manager-tools-design.md`。
-- [ ] `include/agent_tui/filesystem/KnownPaths.hpp`。
-- [ ] `include/agent_tui/filesystem/AllowedRoots.hpp`。
-- [ ] `include/agent_tui/tools/FileManagerTools.hpp`。
-- [ ] `tests/test_file_manager_tools.cpp`。
+第一版已完成：
 
-建议工具：
+- [x] `docs/25-file-manager-tools-design.md`。
+- [x] `include/agent_tui/filesystem/KnownPaths.hpp`。
+- [x] `include/agent_tui/filesystem/AllowedRoots.hpp`。
+- [x] `include/agent_tui/tools/FileManagerTools.hpp`。
+- [x] `tests/test_file_manager_tools.cpp`。
+- [x] `list_path`。
+- [x] `make_dir`。
+- [x] `move_file`。
+- [x] `move_files_by_extension`。
+- [x] dry-run 默认预览。
+- [x] 不覆盖目标文件。
+- [x] 越权路径拒绝。
 
-- [ ] `list_path`：列出允许根目录下的文件，可访问 Desktop / Downloads / Pictures。
-- [ ] `make_dir`：创建目录，需要确认。
-- [ ] `move_file`：移动单个文件，需要确认。
-- [ ] `move_files_by_extension`：按扩展名移动文件，需要确认。
+后续增强：
+
 - [ ] `copy_file`：复制文件，需要确认。
-- [ ] `delete_file_safe`：移动到回收站或 `.trash`，需要确认，第一版不要永久删除。
-- [ ] `dry_run_file_plan`：只生成计划，不执行。
-
-安全策略：
-
-- [ ] 默认只允许 workspace。
-- [ ] 可选允许用户主目录下的 Desktop / Downloads / Documents / Pictures。
-- [ ] 配置字段 `allowed_roots`。
-- [ ] 任何跨目录移动必须先展示 dry-run 计划。
-- [ ] 写入、移动、复制、删除必须确认。
-- [ ] 不允许访问系统目录，例如 `C:\Windows`、`/System`、`/etc`。
-
-Local Intent Router 增强：
-
-- [ ] `列出桌面文件` -> `list_path Desktop`。
-- [ ] `列出下载目录` -> `list_path Downloads`。
-- [ ] `移动图片到新文件夹` -> 生成 dry-run + `move_files_by_extension`。
-- [ ] `把桌面 png 移到 xxx` -> 识别 source=Desktop, ext=png, target=xxx。
+- [ ] `delete_file_safe`：移动到 `.trash` 或回收站，第一版不要永久删除。
+- [ ] `list_recent_files`：按修改时间列出文件。
+- [ ] `group_files_by_extension`：按扩展名生成整理计划。
+- [ ] `allowed_roots` 配置字段。
+- [ ] Unicode 中文路径测试。
 
 ### P1. OpenAI-compatible tool_calls 完整闭环
 
@@ -156,7 +164,7 @@ Local Intent Router 解决了常见任务直接执行的问题；下一步仍需
 
 当前 TUI-lite 能跑，但不够像成熟 Agent。
 
-- [ ] `docs/26-ftxui-tui-backend-design.md`。
+- [ ] `docs/28-ftxui-tui-backend-design.md`。
 - [ ] 增加 `TuiState`。
 - [ ] 分离 UI 状态和 Agent 执行逻辑。
 - [ ] 可选接入 FTXUI。
@@ -208,7 +216,7 @@ Local Intent Router 解决了常见任务直接执行的问题；下一步仍需
 
 现有测试还偏框架层，需要补真实使用场景。
 
-- [ ] `tests/test_file_manager_tools.cpp`。
+- [x] `tests/test_file_manager_tools.cpp`。
 - [ ] `tests/test_allowed_roots.cpp`。
 - [ ] `tests/test_local_desktop_intents.cpp`。
 - [ ] `tests/test_openai_compatible_tool_calls.cpp`。
@@ -236,33 +244,24 @@ Local Intent Router 解决了常见任务直接执行的问题；下一步仍需
 ## 4. 推荐下一次提交
 
 ```text
-feat: add safe file manager tools
+feat: route desktop file intents to file manager tools
 ```
 
 建议包含：
 
-- `docs/25-file-manager-tools-design.md`。
-- `include/agent_tui/filesystem/KnownPaths.hpp`。
-- `include/agent_tui/filesystem/AllowedRoots.hpp`。
-- `include/agent_tui/tools/FileManagerTools.hpp`。
-- `tests/test_file_manager_tools.cpp`。
+- `docs/27-desktop-file-intents-design.md`。
+- 扩展 `IntentClassifier`。
+- TUI 接入 `ListPathTool` 和 `MoveFilesByExtensionTool`。
+- `tests/test_local_desktop_intents.cpp`。
 
-第一批能力：
-
-```text
-list desktop
-list downloads
-make dir
-move image files by extension with dry-run
-confirm before move
-```
-
-这样才能覆盖用户说的：
+目标：让用户可以输入：
 
 ```text
 列出桌面文件
 移动图片到新文件夹
 ```
+
+然后先看到 dry-run 计划，再确认执行。
 
 ## 5. 当前不要急着做
 
