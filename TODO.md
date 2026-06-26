@@ -6,7 +6,7 @@
 
 - [x] 明确项目从 Python/Textual 方案调整为纯 C++ 方案。
 - [x] 明确采用 kwoa-cli 风格 Skills Runtime。
-- [x] 完成设计文档：`docs/00` 到 `docs/12`。
+- [x] 完成设计文档：`docs/00` 到 `docs/14`。
 - [x] 按项目要求补充 `.ai_history/logs/` AI 协作记录。
 - [x] 新增 C++ 工程骨架。
 - [x] 新增 Minimal AgentRunner。
@@ -16,10 +16,12 @@
 - [x] 新增 FileTools + WorkspaceGuard。
 - [x] 新增 PermissionGate。
 - [x] 新增 Controlled Shell Tool。
+- [x] 新增 Write / Edit Tools。
 - [x] 新增 `tests/test_agent_runner.cpp`。
 - [x] 新增 `tests/test_file_tools.cpp`。
 - [x] 新增 `tests/test_permission_gate.cpp`。
 - [x] 新增 `tests/test_shell_tool.cpp`。
+- [x] 新增 `tests/test_write_edit_tools.cpp`。
 - [x] 已在本地隔离 `build/` 目录中验证 `cmake` / `build` / `ctest` 通过。
 - [x] 创建 `deliverables/` 可运行验证产物目录。
 - [x] 明确最终验收 Demo：加载 kwoa-cli Skill，实现 IM / KDocs 文档操作能力验证。
@@ -40,6 +42,7 @@ docs/06-build-verification.md
 docs/08-file-tools-workspace-guard.md
 docs/10-permission-gate-verification.md
 docs/12-controlled-shell-tool-verification.md
+docs/14-write-edit-tools-verification.md
 ```
 
 ## 交付清单状态
@@ -72,17 +75,24 @@ deliverables/screenshots/.gitkeep
 
 ## 下一步优先级
 
-### 1. Write / Edit Tools
+### 1. SessionHistory / AuditLog
 
-在 PermissionGate、WorkspaceGuard 和 ShellTool 稳定后实现写入与编辑能力：
+当前已经具备读文件、搜索代码、写文件、编辑文件、受控 shell、权限确认和工具结果回传能力。下一步应按交付要求实现运行时会话和审计日志。
 
-- [ ] `write_file`
-- [ ] `edit_file`
-- [ ] 写入路径限制在 workspace 内。
-- [ ] 写入前展示 path 和内容摘要。
-- [ ] 用户拒绝时不落盘。
-- [ ] `test_write_file_requires_confirm`。
-- [ ] `test_edit_file_requires_confirm`。
+- [ ] `SessionEvent`
+- [ ] `SessionHistory`
+- [ ] `AuditLog`
+- [ ] 记录 user 输入。
+- [ ] 记录 assistant 文本回复。
+- [ ] 记录 tool_call。
+- [ ] 记录 tool_result。
+- [ ] 记录 permission_denial。
+- [ ] 记录 user_feedback。
+- [ ] 记录 error。
+- [ ] 运行时 session 写入 `.agent-tui/sessions/`。
+- [ ] AI 协作记录继续写入 `.ai_history/logs/`。
+- [ ] `test_session_history_records_tool_flow`。
+- [ ] `test_audit_log_writes_jsonl`。
 
 ### 2. kwoa-cli Skill Runtime 验证
 
@@ -98,18 +108,7 @@ deliverables/screenshots/.gitkeep
 - [ ] IM / KDocs 写操作必须走 PermissionGate。
 - [ ] 增加 `test_kwoa_cli_send_message_requires_confirm`。
 
-### 3. SessionHistory / AuditLog
-
-实现运行时会话和审计日志：
-
-- [ ] `SessionEvent`
-- [ ] `SessionHistory`
-- [ ] `AuditLog`
-- [ ] 记录 user / assistant / tool_call / tool_result / permission_denial / error
-- [ ] 运行时 session 写入 `.agent-tui/sessions/`
-- [ ] AI 协作记录继续写入 `.ai_history/logs/`
-
-### 4. SkillRuntime
+### 3. SkillRuntime
 
 实现通用 Skills 加载和选择：
 
@@ -119,7 +118,7 @@ deliverables/screenshots/.gitkeep
 - [ ] 按 Skill 限制可用工具集合
 - [ ] 新增 `kwoa_cli` Skill smoke test
 
-### 5. TUI
+### 4. TUI
 
 第一版 TUI 不做复杂布局，先保证可用：
 
@@ -138,40 +137,42 @@ deliverables/screenshots/.gitkeep
 ## 刚完成的提交
 
 ```text
-feat: add controlled shell tool
-```
-
-已包含：
-
-- `include/agent_tui/tools/ShellTool.hpp`
-- `tests/test_shell_tool.cpp`
-
-已实现：
-
-- `run_shell` 工具。
-- `PermissionMode::Confirm`。
-- cwd workspace 限制。
-- stdout 捕获。
-- stderr 捕获。
-- exit_code 捕获。
-- timeout。
-- max_output_bytes 输出限制。
-- 用户拒绝时不执行。
-- cwd 逃逸拒绝。
-
-## 下一次最建议做的提交
-
-```text
 feat: add write and edit file tools
 ```
 
-建议包含：
+已包含：
 
 - `docs/13-write-edit-tools-design.md`
 - `include/agent_tui/tools/WriteEditTools.hpp`
 - `tests/test_write_edit_tools.cpp`
 
-目标：让 Agent 具备真实修改项目文件的能力，并通过 PermissionGate 确保写入和编辑都必须确认。
+已实现：
+
+- `write_file`。
+- `edit_file`。
+- `PermissionMode::Confirm`。
+- 路径 workspace 限制。
+- 写入父目录可选创建。
+- old_text / new_text 精确替换。
+- replace_all。
+- 用户拒绝时不落盘。
+- path escape 拒绝。
+
+## 下一次最建议做的提交
+
+```text
+feat: add session history and audit log
+```
+
+建议包含：
+
+- `docs/15-session-history-audit-log-design.md`
+- `include/agent_tui/session/SessionEvent.hpp`
+- `include/agent_tui/session/SessionHistory.hpp`
+- `include/agent_tui/session/AuditLog.hpp`
+- `tests/test_session_history.cpp`
+
+目标：满足交付要求中对用户输入、模型回复、工具调用、工具结果、权限拒绝、错误信息的记录要求。
 
 ## 当前不要做
 
@@ -189,4 +190,4 @@ feat: add write and edit file tools
 - 复杂上下文压缩
 - 完整真实 Provider
 
-先把 C++ 工程骨架、MockProvider、AgentRunner、ToolSystem、PermissionGate、受控 Shell、写入编辑工具、SkillRuntime 跑通。
+先把 C++ 工程骨架、MockProvider、AgentRunner、ToolSystem、PermissionGate、受控 Shell、写入编辑工具、SessionHistory、SkillRuntime 跑通。
