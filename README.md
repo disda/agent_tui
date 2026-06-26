@@ -15,6 +15,7 @@
 - [Agent Harness 基础知识与实现思路](./docs/05-agent-harness-basics.md)
 - [构建验证记录](./docs/06-build-verification.md)
 - [Hello-Agents 启发总结](./docs/07-hello-agents-lessons.md)
+- [FileTools + WorkspaceGuard 验证记录](./docs/08-file-tools-workspace-guard.md)
 - [Deliverables 验证产物](./deliverables/README.md)
 - [kwoa-cli Skill Demo 计划](./deliverables/demo-kwoa-cli-skill.md)
 - [题目 Markdown 原文](./output/l2-agent-tui-task.md)
