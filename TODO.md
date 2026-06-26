@@ -27,6 +27,27 @@
 - [x] 明确最终验收 Demo：加载 kwoa-cli Skill，实现 IM / KDocs 文档操作能力验证。
 - [x] 明确需要受控代码/脚本执行能力，但第一版只做受控 Shell，不做完整解释器或沙箱。
 
+## 作业要求对齐状态
+
+| 作业要求 | 当前状态 | 还缺什么 |
+| --- | --- | --- |
+| 可编译运行的 TUI Agent 完整源码 | 部分完成 | 还缺 TUI、AgentLoop 应用层、真实 Provider、配置系统 |
+| TUI 展示用户输入、模型回复、工具调用、工具结果、权限确认、当前状态 | 未完成 | 需要实现 `TuiApp`、Chat History、Status Bar、Tool Log、Permission Panel、Input Box |
+| 模型决策 -> 工具调用 -> 结果回传 -> 继续推理 | 部分完成 | `AgentRunner` 已具备核心闭环，但还缺 SessionHistory、AgentLoop、真实 Provider 接入 |
+| 仓库工具：目录浏览、文件读取、文件匹配、内容搜索 | 已完成 | 后续优化编码检测、大文件处理 |
+| 文件写入或编辑 | 已完成 | 后续可增强 diff/patch、AST 级编辑 |
+| Shell 命令执行 | 已完成 | 后续可增强命令风险策略和 Windows 支持 |
+| 权限控制：写文件、编辑、Shell 必须确认 | 已完成核心机制 | 后续 TUI 中需要可视化确认面板 |
+| 用户拒绝授权不得执行，拒绝结果进入上下文 | 部分完成 | PermissionGate 已做到拒绝不执行；还需 SessionHistory 记录拒绝事件 |
+| WPS CodingPlan 协议 | 未完成 | 需要 `CodingPlanProvider`、工具调用解析、流式输出、超时、重试 |
+| 多轮会话上下文管理 | 未完成 | 需要 `SessionHistory` 和 `AuditLog` |
+| 用户级 / 项目级配置，项目级优先 | 未完成 | 需要 `ConfigLoader`，覆盖 Provider、模型、API 地址、超时、max_loops，API Key 脱敏 |
+| TUI 内置命令 | 未完成 | `/help`、`/clear`、`/model`、`/status`、`/exit`、`/skills` |
+| 不使用第三方 Agent SDK / Framework | 符合 | 继续保持核心 AgentLoop、工具、权限、会话自行实现 |
+| `.ai_history/logs/` 必须提交 | 已完成并持续补充 | 每轮关键设计继续补日志 |
+| `deliverables/` 可运行验证产物和截图 | 部分完成 | 目录和计划已创建，还缺真实运行日志和关键截图 |
+| 测试至少覆盖 Agent 主循环、工具调用结果回传、权限确认与拒绝、配置优先级、Mock LLM Provider | 部分完成 | 已覆盖 AgentRunner、工具、权限、MockProvider；还缺配置优先级测试 |
+
 ## 当前已验证命令
 
 ```bash
@@ -94,11 +115,28 @@ deliverables/screenshots/.gitkeep
 - [ ] `test_session_history_records_tool_flow`。
 - [ ] `test_audit_log_writes_jsonl`。
 
-### 2. kwoa-cli Skill Runtime 验证
+### 2. ConfigLoader / 配置优先级
 
-实现加载 kwoa-cli Skill 并验证 IM / 文档操作：
+测试要求明确需要覆盖配置优先级，因此 SessionHistory 后应优先补配置系统。
 
-- [ ] 兼容加载 `skills/kwoa-cli/SKILL.md` 风格 Skill。
+- [ ] `Config` 数据结构。
+- [ ] 用户级配置路径：`~/.agent-tui/config.yaml`。
+- [ ] 项目级配置路径：`./.agent-tui.yaml`。
+- [ ] 项目级配置覆盖用户级配置。
+- [ ] 环境变量读取 API Key。
+- [ ] API Key 脱敏输出。
+- [ ] 覆盖 Provider、模型、API 地址、超时时间、最大循环轮次。
+- [ ] `test_project_config_overrides_user_config`。
+- [ ] `test_api_key_is_not_exposed`。
+
+### 3. SkillRuntime + kwoa-cli Skill 验证
+
+实现通用 SkillRuntime，再用 `kwoa_cli` 作为第一个真实 Skill 验证场景。
+
+- [ ] 加载 `skills/*/skill.yaml`。
+- [ ] 加载 `skills/*/SKILL.md`。
+- [ ] SkillSelector 关键词匹配。
+- [ ] 按 Skill 限制可用工具集合。
 - [ ] 新增 `skills/kwoa_cli/skill.yaml`。
 - [ ] 新增 `skills/kwoa_cli/SKILL.md`。
 - [ ] 新增 `run_kwoa_cli` 工具或通过 `run_shell` 安全封装。
@@ -108,31 +146,57 @@ deliverables/screenshots/.gitkeep
 - [ ] IM / KDocs 写操作必须走 PermissionGate。
 - [ ] 增加 `test_kwoa_cli_send_message_requires_confirm`。
 
-### 3. SkillRuntime
+### 4. AgentLoop 应用层
 
-实现通用 Skills 加载和选择：
+`AgentRunner` 已有核心 tool loop，但还缺面向应用的 AgentLoop。
 
-- [ ] 加载 `skills/*/skill.yaml`
-- [ ] 加载 `skills/*/SKILL.md`
-- [ ] SkillSelector 关键词匹配
-- [ ] 按 Skill 限制可用工具集合
-- [ ] 新增 `kwoa_cli` Skill smoke test
+- [ ] 接收用户输入。
+- [ ] 处理内置命令。
+- [ ] 调用 SkillSelector。
+- [ ] 构造 messages。
+- [ ] 调用 AgentRunner。
+- [ ] 把事件写入 SessionHistory / AuditLog。
+- [ ] 将运行状态推给 TUI。
 
-### 4. TUI
+### 5. Minimal TUI
 
-第一版 TUI 不做复杂布局，先保证可用：
+第一版 TUI 不做复杂布局，先保证满足题目展示要求。
 
-- [ ] Chat History
-- [ ] Status Bar
-- [ ] Tool Call Log
-- [ ] Permission Panel
-- [ ] Input Box
-- [ ] `/help`
-- [ ] `/clear`
-- [ ] `/status`
-- [ ] `/model`
-- [ ] `/skills`
-- [ ] `/exit`
+- [ ] Chat History。
+- [ ] Status Bar。
+- [ ] Tool Call Log。
+- [ ] Permission Panel。
+- [ ] Input Box。
+- [ ] `/help`。
+- [ ] `/clear`。
+- [ ] `/status`。
+- [ ] `/model`。
+- [ ] `/skills`。
+- [ ] `/exit`。
+
+### 6. Provider / CodingPlan
+
+先补 OpenAI-compatible Provider，再补 WPS CodingPlan Provider。
+
+- [ ] `OpenAICompatibleProvider`。
+- [ ] `CodingPlanProvider`。
+- [ ] 工具调用解析。
+- [ ] 流式输出。
+- [ ] 超时控制。
+- [ ] 基础重试。
+- [ ] Provider 错误回传。
+
+### 7. Deliverables 真实验证产物
+
+最后阶段补可运行验证产物和截图。
+
+- [ ] `deliverables/run-log.md`。
+- [ ] `deliverables/demo-task.md`。
+- [ ] `deliverables/screenshots/01-tui-start.png`。
+- [ ] `deliverables/screenshots/02-tool-call.png`。
+- [ ] `deliverables/screenshots/03-permission-confirm.png`。
+- [ ] `deliverables/screenshots/04-test-run.png`。
+- [ ] `deliverables/screenshots/05-final-answer.png`。
 
 ## 刚完成的提交
 
@@ -188,6 +252,5 @@ feat: add session history and audit log
 - Docker / 云沙箱
 - 复杂长期记忆
 - 复杂上下文压缩
-- 完整真实 Provider
 
-先把 C++ 工程骨架、MockProvider、AgentRunner、ToolSystem、PermissionGate、受控 Shell、写入编辑工具、SessionHistory、SkillRuntime 跑通。
+先把 C++ 工程骨架、MockProvider、AgentRunner、ToolSystem、PermissionGate、受控 Shell、写入编辑工具、SessionHistory、配置系统、SkillRuntime、TUI、Provider 跑通。
