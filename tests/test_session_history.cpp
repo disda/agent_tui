@@ -126,6 +126,7 @@ void test_session_history_records_permission_denial() {
     auto result = runner.run({Message{Role::User, "try denied", {}}});
 
     assert(result.ok());
+    assert(has_event_type(history, SessionEventType::PermissionRequested));
     assert(has_event_type(history, SessionEventType::PermissionDenied));
     assert(has_event_type(history, SessionEventType::ToolResult));
 

@@ -48,7 +48,7 @@ void test_confirm_tool_denied_goes_back_to_model() {
     assert(result.output == "permission handled");
     assert(approval.request_count() == 1);
     assert(tool_ptr->run_count == 0);
-    assert(runner.last_messages()[1].content == "User denied permission.");
+    assert(runner.last_messages()[2].content == "User denied permission.");
 }
 
 void test_confirm_tool_approved_executes() {
@@ -71,7 +71,7 @@ void test_confirm_tool_approved_executes() {
 
     assert(result.ok());
     assert(tool_ptr->run_count == 1);
-    assert(runner.last_messages()[1].content == "approved text");
+    assert(runner.last_messages()[2].content == "approved text");
 }
 
 void test_confirm_tool_edit_changes_args() {
@@ -91,7 +91,7 @@ void test_confirm_tool_edit_changes_args() {
     auto result = runner.run({Message{Role::User, "try confirm", {}}});
 
     assert(result.ok());
-    assert(runner.last_messages()[1].content == "edited");
+    assert(runner.last_messages()[2].content == "edited");
 }
 
 void test_confirm_tool_feedback_goes_back_to_model_without_execution() {
@@ -114,7 +114,7 @@ void test_confirm_tool_feedback_goes_back_to_model_without_execution() {
 
     assert(result.ok());
     assert(tool_ptr->run_count == 0);
-    assert(runner.last_messages()[1].content == "User feedback: explain first");
+    assert(runner.last_messages()[2].content == "User feedback: explain first");
 }
 
 int main() {

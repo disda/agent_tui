@@ -32,6 +32,9 @@
 - [OpenAI-compatible Provider 验证说明](./docs/22-openai-compatible-provider-verification.md)
 - [Local Intent Router 技术设计](./docs/23-local-intent-router-design.md)
 - [Local Intent Router 验证说明](./docs/24-local-intent-router-verification.md)
+- [File Manager Tools 技术设计](./docs/25-file-manager-tools-design.md)
+- [File Manager Tools 验证说明](./docs/26-file-manager-tools-verification.md)
+- [Pi / Codex CLI 风格工具协议演进路线](./docs/27-pi-codex-tooling-roadmap.md)
 - [Deliverables 验证产物](./deliverables/README.md)
 - [题目 Markdown 原文](./output/l2-agent-tui-task.md)
 
@@ -91,7 +94,7 @@ model = "gpt-4.1"
 api_base = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"
 timeout_seconds = 60
-max_loops = 8
+max_loops = 25
 ```
 
 PowerShell 验证 OpenAI-compatible：
@@ -143,7 +146,7 @@ assistant: mock assistant: hello
 
 它会通过 AgentRunner 触发 `write_file`，在用户确认后生成 `demo.py`。
 
-Local Intent Router 只作为临时快捷命令保留，不再作为自然语言任务的主路径继续扩展。
+自然语言任务不再走 Local Intent Router。本地能力必须通过模型可见的 tool_calls 执行；显式 slash command 只用于 `/status`、`/config`、`/exit` 这类 TUI 控制命令。
 
 ## 验证目标
 
@@ -173,7 +176,7 @@ Local Intent Router 只作为临时快捷命令保留，不再作为自然语言
 ## 设计原则
 
 - 核心 Agent 能力自行实现，不依赖第三方 Agent SDK 或 Agent Framework。
-- Tools 是唯一执行入口；规则意图只能作为快捷命令或 fallback，不能替代模型 tool_calls。
+- Tools 是自然语言任务的唯一执行入口；TUI 不做本地意图规则抢答，显式 slash command 只处理界面和配置控制。
 - 只读工具可自动执行；写文件、编辑文件和 Shell 命令必须经过用户确认。
 - 所有用户输入、模型回复、工具调用、工具结果、权限拒绝和错误信息都必须进入会话历史。
 - 关键 AI 协作记录沉淀到 `.ai_history/logs/`。

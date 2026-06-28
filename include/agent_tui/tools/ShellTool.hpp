@@ -4,9 +4,11 @@
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "agent_tui/tools/Tool.hpp"
 #include "agent_tui/workspace/Workspace.hpp"
@@ -19,6 +21,11 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#else
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #endif
 
 namespace agent_tui {
@@ -59,34 +66,51 @@ inline void append_bounded(std::string& target, const char* data, std::size_t si
         return;
     }
     const auto remaining = max_bytes - target.size();
-    target.append(data, std::min(size, remaining));
+    target.append(data, (std::min)(size, remaining));
     if (target.size() >= max_bytes) {
-        target += "\n...[truncated]";
+        target += "\n[truncated: max_output_bytes " + std::to_string(max_bytes) + "]";
     }
 }
 
-inline std::string format_result(int exit_code, bool timeout, const std::string& stdout_text, const std::string& stderr_text) {
+inline std::string format_result(int exit_code,
+                                 bool timeout,
+                                 const std::string& stdout_text,
+                                 const std::string& stderr_text,
+                                 const std::string& full_output_path = {}) {
     std::ostringstream out;
     out << "exit_code: " << exit_code << '\n';
     out << "timeout: " << (timeout ? "true" : "false") << '\n';
+    if (!full_output_path.empty()) {
+        out << "full_output: " << full_output_path << '\n';
+    }
     out << "stdout:\n" << stdout_text << '\n';
     out << "stderr:\n" << stderr_text << '\n';
     return out.str();
 }
 
+inline std::string read_text_file(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+    return buffer.str();
+}
+
+inline std::string preview_output(const std::string& full_output, std::size_t max_output_bytes) {
+    std::string preview;
+    append_bounded(preview, full_output.data(), full_output.size(), max_output_bytes);
+    return preview;
+}
+
+inline std::filesystem::path shell_output_path(const std::filesystem::path& workspace_root) {
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    auto dir = workspace_root / ".agent_tui" / "shell-output";
+    std::filesystem::create_directories(dir);
+    return dir / ("run-" + std::to_string(stamp) + ".txt");
+}
+
 #ifdef _WIN32
-inline std::string quote_for_cmd_cd(const std::filesystem::path& path) {
-    std::string value = path.string();
-    std::string quoted = "\"\"";
-    for (const char ch : value) {
-        if (ch == '"') {
-            quoted += "\"\"";
-        } else {
-            quoted += ch;
-        }
-    }
-    quoted += "\"\"";
-    return quoted;
+inline std::wstring widen_ascii(const std::string& value) {
+    return std::wstring(value.begin(), value.end());
 }
 #else
 inline bool set_nonblocking(int fd, std::string& error) {
@@ -102,7 +126,7 @@ inline bool set_nonblocking(int fd, std::string& error) {
     return true;
 }
 
-inline void drain_fd(int& fd, std::string& output, std::size_t max_output_bytes) {
+inline void drain_fd(int& fd, std::string& preview, std::string& full, std::size_t max_output_bytes) {
     if (fd < 0) {
         return;
     }
@@ -111,7 +135,8 @@ inline void drain_fd(int& fd, std::string& output, std::size_t max_output_bytes)
     while (true) {
         const ssize_t n = read(fd, buffer, sizeof(buffer));
         if (n > 0) {
-            append_bounded(output, buffer, static_cast<std::size_t>(n), max_output_bytes);
+            full.append(buffer, static_cast<std::size_t>(n));
+            append_bounded(preview, buffer, static_cast<std::size_t>(n), max_output_bytes);
             continue;
         }
         if (n == 0) {
@@ -137,6 +162,9 @@ public:
 
     std::string name() const override { return "run_shell"; }
     std::string description() const override { return "Run a shell command inside the workspace."; }
+    std::string parameters_schema_json() const override {
+        return R"({"type":"object","properties":{"command":{"type":"string","description":"Shell command to run"},"cwd":{"type":"string","description":"Workspace-relative working directory, defaults to ."},"timeout_seconds":{"type":"string","description":"Timeout in seconds"},"max_output_bytes":{"type":"string","description":"Maximum output bytes to return"}},"required":["command"]})";
+    }
     PermissionMode permission_mode() const override { return PermissionMode::Confirm; }
 
     ToolResult run(const JsonLike& arguments) override {
@@ -145,7 +173,7 @@ public:
             return ToolResult::failure("missing required argument: command");
         }
 
-        const auto timeout_seconds = std::max(1, shell_tool_detail::get_int_arg(arguments, "timeout_seconds", 30));
+        const auto timeout_seconds = (std::max)(1, shell_tool_detail::get_int_arg(arguments, "timeout_seconds", 30));
         const auto max_output_bytes = shell_tool_detail::get_size_arg(arguments, "max_output_bytes", 64 * 1024);
 
         std::filesystem::path cwd;
@@ -173,19 +201,86 @@ private:
                            int timeout_seconds,
                            std::size_t max_output_bytes) {
         (void)timeout_seconds;
-        const auto full_command = "cmd /C \"cd /d " + shell_tool_detail::quote_for_cmd_cd(cwd) + " && " + command + " 2>&1\"";
-        FILE* pipe = _popen(full_command.c_str(), "r");
-        if (pipe == nullptr) {
-            return ToolResult::failure("failed to start command with _popen");
+        const auto output_path = shell_tool_detail::shell_output_path(workspace_.root());
+
+        SECURITY_ATTRIBUTES security_attributes{};
+        security_attributes.nLength = sizeof(SECURITY_ATTRIBUTES);
+        security_attributes.bInheritHandle = TRUE;
+
+        HANDLE output_file = CreateFileW(output_path.wstring().c_str(),
+                                         GENERIC_WRITE,
+                                         FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                         &security_attributes,
+                                         CREATE_ALWAYS,
+                                         FILE_ATTRIBUTE_NORMAL,
+                                         nullptr);
+        if (output_file == INVALID_HANDLE_VALUE) {
+            return ToolResult::failure("failed to create shell output file");
         }
 
-        std::string output;
-        char buffer[4096];
-        while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-            shell_tool_detail::append_bounded(output, buffer, std::char_traits<char>::length(buffer), max_output_bytes);
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        startup.dwFlags = STARTF_USESTDHANDLES;
+        startup.hStdOutput = output_file;
+        startup.hStdError = output_file;
+        startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+
+        PROCESS_INFORMATION process{};
+        const auto command_line_text = std::wstring{L"cmd.exe /D /S /C \"cd /d \"\""} + cwd.wstring() +
+                                       L"\"\" && " + shell_tool_detail::widen_ascii(command) + L"\"";
+        std::vector<wchar_t> command_line(command_line_text.begin(), command_line_text.end());
+        command_line.push_back(L'\0');
+
+        HANDLE job = CreateJobObjectW(nullptr, nullptr);
+        if (job == nullptr) {
+            return ToolResult::failure("failed to create shell job object");
         }
-        const int exit_code = _pclose(pipe);
-        return ToolResult::success(shell_tool_detail::format_result(exit_code, false, output, {}));
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION job_limits{};
+        job_limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        SetInformationJobObject(job, JobObjectExtendedLimitInformation, &job_limits, sizeof(job_limits));
+
+        const BOOL started = CreateProcessW(nullptr,
+                                            command_line.data(),
+                                            nullptr,
+                                            nullptr,
+                                            TRUE,
+                                            CREATE_NO_WINDOW | CREATE_SUSPENDED,
+                                            nullptr,
+                                            nullptr,
+                                            &startup,
+                                            &process);
+        CloseHandle(output_file);
+
+        if (!started) {
+            CloseHandle(job);
+            return ToolResult::failure("failed to start command with CreateProcessW");
+        }
+
+        AssignProcessToJobObject(job, process.hProcess);
+        ResumeThread(process.hThread);
+
+        const DWORD wait_result = WaitForSingleObject(process.hProcess, static_cast<DWORD>(timeout_seconds) * 1000);
+        bool timeout = false;
+        if (wait_result == WAIT_TIMEOUT) {
+            timeout = true;
+            TerminateJobObject(job, 1);
+            WaitForSingleObject(process.hProcess, 5000);
+        }
+
+        DWORD raw_exit_code = 1;
+        GetExitCodeProcess(process.hProcess, &raw_exit_code);
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+        CloseHandle(job);
+
+        const auto full_output = shell_tool_detail::read_text_file(output_path);
+        const auto preview = shell_tool_detail::preview_output(full_output, max_output_bytes);
+        const auto full_output_path = full_output.size() > max_output_bytes ? output_path.generic_string() : std::string{};
+        return ToolResult::success(shell_tool_detail::format_result(static_cast<int>(raw_exit_code),
+                                                                    timeout,
+                                                                    preview,
+                                                                    {},
+                                                                    full_output_path));
     }
 #else
     ToolResult run_posix(const std::string& command,
@@ -241,6 +336,8 @@ private:
 
         std::string stdout_text;
         std::string stderr_text;
+        std::string full_stdout;
+        std::string full_stderr;
         bool timeout = false;
         int status = 0;
         bool child_exited = false;
@@ -248,10 +345,10 @@ private:
 
         while (stdout_fd >= 0 || stderr_fd >= 0 || !child_exited) {
             if (stdout_fd >= 0) {
-                shell_tool_detail::drain_fd(stdout_fd, stdout_text, max_output_bytes);
+                shell_tool_detail::drain_fd(stdout_fd, stdout_text, full_stdout, max_output_bytes);
             }
             if (stderr_fd >= 0) {
-                shell_tool_detail::drain_fd(stderr_fd, stderr_text, max_output_bytes);
+                shell_tool_detail::drain_fd(stderr_fd, stderr_text, full_stderr, max_output_bytes);
             }
 
             if (!child_exited) {
@@ -286,7 +383,16 @@ private:
             }
         }
 
-        return ToolResult::success(shell_tool_detail::format_result(exit_code, timeout, stdout_text, stderr_text));
+        std::string full_output_path;
+        if (full_stdout.size() + full_stderr.size() > max_output_bytes) {
+            const auto output_path = shell_tool_detail::shell_output_path(workspace_.root());
+            std::ofstream output(output_path, std::ios::binary | std::ios::trunc);
+            output << full_stdout;
+            output << full_stderr;
+            full_output_path = output_path.generic_string();
+        }
+
+        return ToolResult::success(shell_tool_detail::format_result(exit_code, timeout, stdout_text, stderr_text, full_output_path));
     }
 #endif
 

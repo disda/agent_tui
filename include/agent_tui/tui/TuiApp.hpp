@@ -4,6 +4,7 @@
 #include <csignal>
 #include <cctype>
 #include <filesystem>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <sstream>
@@ -17,7 +18,6 @@
 
 #include "agent_tui/agent/AgentRunner.hpp"
 #include "agent_tui/config/ConfigLoader.hpp"
-#include "agent_tui/intent/IntentClassifier.hpp"
 #include "agent_tui/llm/ProviderFactory.hpp"
 #include "agent_tui/permissions/ApprovalService.hpp"
 #include "agent_tui/session/SessionHistory.hpp"
@@ -29,6 +29,35 @@
 #include "agent_tui/workspace/Workspace.hpp"
 
 namespace agent_tui {
+
+enum class TuiRuntimeStatus {
+    Idle,
+    Thinking,
+    WaitingApproval,
+    RunningTool,
+    Done,
+    Error,
+    Interrupted,
+};
+
+enum class TuiCellKind {
+    System,
+    User,
+    Assistant,
+    Agent,
+    ToolCall,
+    ToolResult,
+    ApprovalRequired,
+    ApprovalDenied,
+    ApprovalFeedback,
+    Error,
+};
+
+struct TuiCell {
+    TuiCellKind kind = TuiCellKind::System;
+    std::string title;
+    std::string body;
+};
 
 namespace tui_detail {
 
@@ -136,7 +165,7 @@ public:
             return true;
         }
         if (command == "/clear") {
-            chat_lines_.clear();
+            transcript_cells_.clear();
             history_.clear();
             interrupted_ = false;
             add_system_message("session cleared");
@@ -197,6 +226,15 @@ public:
         color_enabled_ = false;
     }
 
+    static std::string coding_agent_system_prompt(const Workspace& workspace) {
+        return "You are agent_tui, a local coding agent. "
+               "Use tools to inspect, create, edit, and test code when useful. "
+               "Call write_file, edit_file, or run_shell only when necessary; the TUI will ask the user for permission. "
+               "After each tool result, continue reasoning until the task is complete, then provide a concise final answer.\n"
+               "Current working directory: " +
+               workspace.root().generic_string();
+    }
+
 private:
     static void signal_handler(int) {
         global_interrupted_ = true;
@@ -215,16 +253,6 @@ private:
     void handle_user_input(const std::string& line) {
         history_.add(SessionEvent::user_input(line));
         add_chat_line("user", line);
-
-        if (try_handle_local_file_request(line)) {
-            return;
-        }
-
-        const auto intent = IntentClassifier::classify(line);
-        if (try_handle_local_intent(intent)) {
-            return;
-        }
-
         run_agent_loop(line);
     }
 
@@ -234,6 +262,9 @@ private:
             : input_(input), output_(output) {}
 
         ApprovalDecision request(const ToolCall& call, const Tool& tool) override {
+            if (before_request_) {
+                before_request_(call, tool);
+            }
             output_ << "\nApprove " << tool.name() << ": " << summarize(call.arguments) << " ? [y/N] " << std::flush;
             std::string answer;
             if (!std::getline(input_, answer)) {
@@ -245,6 +276,8 @@ private:
             }
             return ApprovalDecision::deny("user rejected in TUI");
         }
+
+        std::function<void(const ToolCall&, const Tool&)> before_request_;
 
     private:
         static std::string summarize(const JsonLike& arguments) {
@@ -277,31 +310,56 @@ private:
             auto provider = ProviderFactory::create(config_);
             auto registry = make_tool_registry(workspace);
             TuiApprovalService approval(*input_, *output_);
+            approval.before_request_ = [&](const ToolCall&, const Tool&) {
+                status_ = TuiRuntimeStatus::WaitingApproval;
+                render();
+            };
             AgentRunner runner(*provider, registry, approval, history_, config_.max_loops);
+            bool streamed_assistant = false;
+            streaming_assistant_index_ = npos();
+            status_ = TuiRuntimeStatus::Thinking;
+            add_chat_line("agent", "thinking with " + config_.provider + " (" + std::to_string(config_.max_loops) + " max steps)");
+            render();
+            runner.set_observer(AgentRunObserver{
+                [&](const SessionEvent& event) {
+                    if (event.type == SessionEventType::ToolCall) {
+                        status_ = TuiRuntimeStatus::RunningTool;
+                    }
+                    add_flow_line(event);
+                    render();
+                },
+                [&](const std::string& delta) {
+                    status_ = TuiRuntimeStatus::Thinking;
+                    streamed_assistant = true;
+                    append_assistant_delta(delta);
+                    render();
+                },
+            });
             auto result = runner.run({
-                Message{Role::System, coding_agent_system_prompt(), {}},
+                Message{Role::System, coding_agent_system_prompt(workspace), {}},
                 Message{Role::User, line, {}},
             });
 
-            if (result.ok()) {
+            if (result.ok() && !streamed_assistant) {
+                status_ = TuiRuntimeStatus::Done;
                 add_chat_line("assistant", result.output);
                 return;
             }
+            if (result.ok()) {
+                status_ = TuiRuntimeStatus::Done;
+                return;
+            }
+            status_ = TuiRuntimeStatus::Error;
             add_error_message(result.error);
         } catch (const std::exception& error) {
+            status_ = TuiRuntimeStatus::Error;
             add_error_message(error.what());
         }
     }
 
-    static std::string coding_agent_system_prompt() {
-        return "You are agent_tui, a local coding agent. "
-               "Use tools to inspect, create, edit, and test code when useful. "
-               "Call write_file, edit_file, or run_shell only when necessary; the TUI will ask the user for permission. "
-               "After each tool result, continue reasoning until the task is complete, then provide a concise final answer.";
-    }
-
     static ToolRegistry make_tool_registry(const Workspace& workspace) {
         ToolRegistry registry;
+        registry.register_tool(std::make_unique<WorkspaceInfoTool>(workspace));
         registry.register_tool(std::make_unique<ListDirTool>(workspace));
         registry.register_tool(std::make_unique<ReadFileTool>(workspace));
         registry.register_tool(std::make_unique<GlobFilesTool>(workspace));
@@ -312,180 +370,22 @@ private:
         return registry;
     }
 
-    bool try_handle_local_intent(const Intent& intent) {
-        if (intent.type == IntentType::Unknown) {
-            return false;
-        }
-
-        add_system_message("local intent: " + intent_type_name(intent.type) + " (confidence " + std::to_string(intent.confidence) + ")");
-
-        try {
-            Workspace workspace(workspace_);
-            if (intent.type == IntentType::ListDir) {
-                ListDirTool tool(workspace);
-                append_tool_result("list_dir", tool.run({{"path", intent.argument.empty() ? "." : intent.argument}}));
-                return true;
-            }
-            if (intent.type == IntentType::ReadFile) {
-                if (intent.argument.empty()) {
-                    add_error_message("read_file requires a path, e.g. read README.md");
-                    return true;
-                }
-                ReadFileTool tool(workspace);
-                append_tool_result("read_file", tool.run({{"path", intent.argument}, {"max_bytes", "12000"}}));
-                return true;
-            }
-            if (intent.type == IntentType::SearchText) {
-                if (intent.argument.empty()) {
-                    add_error_message("search_text requires a query, e.g. search AgentRunner");
-                    return true;
-                }
-                SearchTextTool tool(workspace);
-                append_tool_result("search_text", tool.run({{"query", intent.argument}, {"path", "."}, {"max_matches", "50"}}));
-                return true;
-            }
-            if (intent.type == IntentType::ConfigureProject) {
-                return confirm_and_run_shell("cmake -S . -B build");
-            }
-            if (intent.type == IntentType::BuildProject) {
-                return confirm_and_run_shell("cmake --build build");
-            }
-            if (intent.type == IntentType::TestProject) {
-                return confirm_and_run_shell("ctest --test-dir build --output-on-failure");
-            }
-        } catch (const std::exception& error) {
-            add_error_message(error.what());
-            return true;
-        }
-
-        return false;
-    }
-
-    bool confirm_and_run_shell(const std::string& command) {
-        *output_ << "\nApprove run_shell: " << command << " ? [y/N] " << std::flush;
-        std::string answer;
-        if (!std::getline(*input_, answer)) {
-            add_error_message("approval input ended before a decision");
-            return true;
-        }
-        answer = lower_ascii(trim_copy(answer));
-        if (answer != "y" && answer != "yes") {
-            const auto message = std::string{"User denied permission."};
-            add_chat_line("tool", message);
-            history_.add(SessionEvent::permission_denied("local_run_shell", "run_shell", message));
-            history_.add(SessionEvent::tool_result("local_run_shell", "run_shell", message));
-            return true;
-        }
-
-        Workspace workspace(workspace_);
-        ShellTool tool(workspace);
-        append_tool_result("run_shell", tool.run({{"command", command}, {"cwd", "."}, {"timeout_seconds", std::to_string(config_.timeout_seconds)}}));
-        return true;
-    }
-
-    void append_tool_result(const std::string& tool_name, const ToolResult& result) {
-        const auto content = result.ok ? result.output : result.error;
-        add_chat_line(result.ok ? "tool" : "error", tool_name + "\n" + content);
-        history_.add(SessionEvent::tool_result("local_" + tool_name, tool_name, content));
-        if (!result.ok) {
-            history_.add(SessionEvent::error(content));
-        }
-    }
-
-    bool try_handle_local_file_request(const std::string& line) {
-        if (!looks_like_local_file_write_request(line)) {
-            return false;
-        }
-
-        const auto path = extract_path_or_default(line);
-        auto content = extract_requested_file_content(line);
-        if (content.empty()) {
-            return false;
-        }
-
-        try {
-            Workspace workspace(workspace_);
-            WriteFileTool tool(workspace);
-            const auto result = tool.run({
-                {"path", path},
-                {"content", content},
-                {"create_parent_dirs", "true"},
-            });
-
-            if (result.ok) {
-                const auto answer = "created " + path + " and wrote the requested content.";
-                add_chat_line("tool", result.output);
-                add_chat_line("assistant", answer);
-                history_.add(SessionEvent::tool_result("local_write_file", "write_file", result.output));
-                history_.add(SessionEvent::assistant_message(answer));
-                return true;
-            }
-            add_error_message(result.error);
-            return true;
-        } catch (const std::exception& error) {
-            add_error_message(error.what());
-            return true;
-        }
-    }
-
-    static bool looks_like_local_file_write_request(const std::string& line) {
-        const bool mentions_file = line.find(utf8_file()) != std::string::npos || line.find("file") != std::string::npos;
-        const bool asks_create = line.find(utf8_create()) != std::string::npos || line.find("create") != std::string::npos;
-        const bool asks_write = line.find(utf8_write()) != std::string::npos || line.find("write") != std::string::npos;
-        return mentions_file && (asks_create || asks_write);
-    }
-
-    static std::string extract_path_or_default(const std::string& line) {
-        const auto tokens = split_words(line);
-        for (const auto& token : tokens) {
-            if (token.find('.') != std::string::npos && token.find('/') == std::string::npos && token.find('\\') == std::string::npos) {
-                return strip_punctuation(token);
-            }
-            if (token.find('/') != std::string::npos || token.find('\\') != std::string::npos) {
-                return strip_punctuation(token);
-            }
-        }
-        return "hello.txt";
-    }
-
-    static std::string extract_requested_file_content(const std::string& line) {
-        const std::vector<std::string> markers = {
-            utf8_content_only_colon(),
-            utf8_content_only_ascii_colon(),
-            utf8_content_write_colon(),
-            utf8_content_write_ascii_colon(),
-            utf8_write_colon(),
-            utf8_write_ascii_colon(),
-            utf8_write(),
-            "content:",
-            "with content:",
-            "write ",
-        };
-        for (const auto& marker : markers) {
-            const auto pos = line.find(marker);
-            if (pos != std::string::npos) {
-                return trim_copy(line.substr(pos + marker.size()));
-            }
-        }
-        return {};
-    }
-
     void render() {
         sync_global_interrupt();
-        const auto status = interrupted_ ? std::string{"INTERRUPTED"} : std::string{"IDLE"};
+        const auto status = runtime_status_label();
         *output_ << "\n" << ansi("1;38;5;81") << "Agent TUI" << ansi("0")
-                 << "  " << ansi(interrupted_ ? "1;38;5;203" : "1;38;5;114") << "[" << status << "]" << ansi("0") << "\n";
+                 << "  " << ansi(status_color()) << "[" << status << "]" << ansi("0") << "\n";
         *output_ << ansi("38;5;245") << "Provider" << ansi("0") << "  " << config_.provider
                  << "    " << ansi("38;5;245") << "Model" << ansi("0") << "  " << config_.model << "\n";
         *output_ << ansi("38;5;245") << "API" << ansi("0") << "       " << (config_.api_base.empty() ? "<not set>" : config_.api_base)
                  << "    " << ansi("38;5;245") << "Key" << ansi("0") << "  " << config_.api_key_status() << "\n\n";
-        *output_ << ansi("1;38;5;252") << "Recent messages" << ansi("0") << "\n";
-        if (chat_lines_.empty()) {
+        *output_ << ansi("1;38;5;252") << "Transcript" << ansi("0") << "\n";
+        if (transcript_cells_.empty()) {
             *output_ << "  " << ansi("38;5;245") << "No messages yet. Type a prompt or /help." << ansi("0") << "\n";
         } else {
-            const std::size_t start = chat_lines_.size() > 12 ? chat_lines_.size() - 12 : 0;
-            for (std::size_t i = start; i < chat_lines_.size(); ++i) {
-                render_chat_line(chat_lines_[i]);
+            const std::size_t start = transcript_cells_.size() > 12 ? transcript_cells_.size() - 12 : 0;
+            for (std::size_t i = start; i < transcript_cells_.size(); ++i) {
+                render_chat_line(transcript_cells_[i]);
             }
         }
         *output_ << "\n" << ansi("38;5;245") << "Commands" << ansi("0")
@@ -509,7 +409,6 @@ private:
     void show_help() {
         add_system_message(
             "commands:\n"
-            "  Local intents: ls, read <file>, search <query>, configure, build, test\n"
             "  /help                         show help\n"
             "  /status                       show runtime status\n"
             "  /clear                        clear chat and session history\n"
@@ -532,11 +431,47 @@ private:
 
     void show_status() {
         std::ostringstream out;
-        out << "status: " << (interrupted_ ? "INTERRUPTED" : "IDLE") << '\n';
+        out << "status: " << runtime_status_label() << '\n';
         out << config_.summary();
         out << "workspace: " << workspace_.generic_string() << '\n';
         out << "history_events: " << history_.size();
         add_system_message(out.str());
+    }
+
+    std::string runtime_status_label() const {
+        if (interrupted_) {
+            return "INTERRUPTED";
+        }
+        switch (status_) {
+            case TuiRuntimeStatus::Idle:
+                return "IDLE";
+            case TuiRuntimeStatus::Thinking:
+                return "THINKING";
+            case TuiRuntimeStatus::WaitingApproval:
+                return "WAITING_APPROVAL";
+            case TuiRuntimeStatus::RunningTool:
+                return "RUNNING_TOOL";
+            case TuiRuntimeStatus::Done:
+                return "DONE";
+            case TuiRuntimeStatus::Error:
+                return "ERROR";
+            case TuiRuntimeStatus::Interrupted:
+                return "INTERRUPTED";
+        }
+        return "IDLE";
+    }
+
+    const char* status_color() const {
+        if (interrupted_ || status_ == TuiRuntimeStatus::Error) {
+            return "1;38;5;203";
+        }
+        if (status_ == TuiRuntimeStatus::WaitingApproval) {
+            return "1;38;5;214";
+        }
+        if (status_ == TuiRuntimeStatus::RunningTool || status_ == TuiRuntimeStatus::Thinking) {
+            return "1;38;5;220";
+        }
+        return "1;38;5;114";
     }
 
     void handle_api_command(std::istringstream& input) {
@@ -636,44 +571,102 @@ private:
     }
 
     void add_system_message(const std::string& message) {
-        chat_lines_.push_back("system: " + message);
+        add_cell(TuiCellKind::System, {}, message);
         history_.add(SessionEvent::assistant_message(message));
     }
 
     void add_error_message(const std::string& message) {
-        chat_lines_.push_back("error: " + message);
+        add_cell(TuiCellKind::Error, {}, message);
         history_.add(SessionEvent::error(message));
     }
 
     void add_chat_line(const std::string& role, const std::string& message) {
-        chat_lines_.push_back(role + ": " + message);
+        add_cell(cell_kind_for_role(role), {}, message);
+    }
+
+    void add_flow_line(const SessionEvent& event) {
+        switch (event.type) {
+            case SessionEventType::ToolCall:
+                add_cell(TuiCellKind::ToolCall, event.tool_name, summarize_arguments(event.arguments));
+                break;
+            case SessionEventType::PermissionRequested:
+                add_cell(TuiCellKind::ApprovalRequired, event.tool_name, summarize_arguments(event.arguments));
+                break;
+            case SessionEventType::PermissionDenied:
+                add_cell(TuiCellKind::ApprovalDenied, event.tool_name, truncate_text(event.content, 120));
+                break;
+            case SessionEventType::UserFeedback:
+                add_cell(TuiCellKind::ApprovalFeedback, event.tool_name, truncate_text(event.content, 120));
+                break;
+            case SessionEventType::ToolResult:
+                add_cell(TuiCellKind::ToolResult, event.tool_name, summarize_tool_result(event.content));
+                break;
+            case SessionEventType::Error:
+                add_cell(TuiCellKind::Error, {}, event.content);
+                break;
+            case SessionEventType::UserInput:
+            case SessionEventType::AssistantMessage:
+                break;
+        }
+    }
+
+    void append_assistant_delta(const std::string& delta) {
+        if (streaming_assistant_index_ >= transcript_cells_.size()) {
+            add_cell(TuiCellKind::Assistant, {}, {});
+            streaming_assistant_index_ = transcript_cells_.size() - 1;
+        }
+        transcript_cells_[streaming_assistant_index_].body += delta;
+    }
+
+    static constexpr std::size_t npos() {
+        return static_cast<std::size_t>(-1);
+    }
+
+    static std::string summarize_arguments(const JsonLike& arguments) {
+        if (arguments.empty()) {
+            return "";
+        }
+        std::ostringstream out;
+        out << "(";
+        bool first = true;
+        for (const auto& [key, value] : arguments) {
+            if (!first) {
+                out << ", ";
+            }
+            first = false;
+            out << key << "=" << truncate_text(value, 48);
+        }
+        out << ")";
+        return out.str();
+    }
+
+    static std::string summarize_tool_result(const std::string& content) {
+        auto summary = content;
+        const auto newline = summary.find('\n');
+        if (newline != std::string::npos) {
+            summary = summary.substr(0, newline);
+        }
+        if (summary.empty()) {
+            summary = "<empty result>";
+        }
+        return truncate_text(summary, 120);
+    }
+
+    static std::string truncate_text(const std::string& value, std::size_t max_size) {
+        if (value.size() <= max_size) {
+            return value;
+        }
+        return value.substr(0, max_size) + "...";
     }
 
     std::string ansi(const char* code) const {
         return color_enabled_ ? "\x1b[" + std::string(code) + "m" : "";
     }
 
-    void render_chat_line(const std::string& line) {
-        auto role = std::string{"log"};
-        auto message = line;
-        const auto separator = line.find(": ");
-        if (separator != std::string::npos) {
-            role = line.substr(0, separator);
-            message = line.substr(separator + 2);
-        }
-
-        const char* color = "38;5;245";
-        if (role == "user") {
-            color = "38;5;81";
-        } else if (role == "assistant") {
-            color = "38;5;114";
-        } else if (role == "error") {
-            color = "38;5;203";
-        } else if (role == "tool") {
-            color = "38;5;220";
-        }
-
-        *output_ << "  " << ansi(color) << role << ansi("0") << " > ";
+    void render_chat_line(const TuiCell& cell) {
+        const auto label = cell_label(cell.kind);
+        const auto message = cell_text(cell);
+        *output_ << "  " << ansi(cell_color(cell.kind)) << label << ansi("0") << " > ";
         const auto wrapped = wrap_text(message, 84);
         if (wrapped.empty()) {
             *output_ << "\n";
@@ -683,6 +676,95 @@ private:
         for (std::size_t i = 1; i < wrapped.size(); ++i) {
             *output_ << "       " << wrapped[i] << "\n";
         }
+    }
+
+    static TuiCellKind cell_kind_for_role(const std::string& role) {
+        if (role == "user") {
+            return TuiCellKind::User;
+        }
+        if (role == "assistant") {
+            return TuiCellKind::Assistant;
+        }
+        if (role == "agent") {
+            return TuiCellKind::Agent;
+        }
+        if (role == "error") {
+            return TuiCellKind::Error;
+        }
+        if (role == "tool_call") {
+            return TuiCellKind::ToolCall;
+        }
+        if (role == "tool_result") {
+            return TuiCellKind::ToolResult;
+        }
+        if (role == "approval") {
+            return TuiCellKind::ApprovalRequired;
+        }
+        return TuiCellKind::System;
+    }
+
+    void add_cell(TuiCellKind kind, std::string title, std::string body) {
+        transcript_cells_.push_back(TuiCell{kind, std::move(title), std::move(body)});
+    }
+
+    static const char* cell_label(TuiCellKind kind) {
+        switch (kind) {
+            case TuiCellKind::System:
+                return "system";
+            case TuiCellKind::User:
+                return "user";
+            case TuiCellKind::Assistant:
+                return "assistant";
+            case TuiCellKind::Agent:
+                return "agent";
+            case TuiCellKind::ToolCall:
+                return "tool call";
+            case TuiCellKind::ToolResult:
+                return "tool result";
+            case TuiCellKind::ApprovalRequired:
+                return "approval required";
+            case TuiCellKind::ApprovalDenied:
+                return "approval denied";
+            case TuiCellKind::ApprovalFeedback:
+                return "approval feedback";
+            case TuiCellKind::Error:
+                return "error";
+        }
+        return "log";
+    }
+
+    static const char* cell_color(TuiCellKind kind) {
+        switch (kind) {
+            case TuiCellKind::User:
+                return "38;5;81";
+            case TuiCellKind::Assistant:
+                return "38;5;114";
+            case TuiCellKind::Agent:
+                return "38;5;147";
+            case TuiCellKind::ToolCall:
+                return "38;5;220";
+            case TuiCellKind::ToolResult:
+                return "38;5;150";
+            case TuiCellKind::ApprovalRequired:
+            case TuiCellKind::ApprovalDenied:
+            case TuiCellKind::ApprovalFeedback:
+                return "38;5;214";
+            case TuiCellKind::Error:
+                return "38;5;203";
+            case TuiCellKind::System:
+                return "38;5;245";
+        }
+        return "38;5;245";
+    }
+
+    static std::string cell_text(const TuiCell& cell) {
+        if (cell.title.empty()) {
+            return cell.body;
+        }
+        if (cell.body.empty()) {
+            return cell.title;
+        }
+        return cell.title + " " + cell.body;
     }
 
     static std::vector<std::string> wrap_text(const std::string& text, std::size_t width) {
@@ -708,35 +790,6 @@ private:
         return lines;
     }
 
-    static std::vector<std::string> split_words(const std::string& line) {
-        std::vector<std::string> result;
-        std::istringstream input(line);
-        std::string token;
-        while (input >> token) {
-            result.push_back(token);
-        }
-        return result;
-    }
-
-    static std::string strip_punctuation(std::string value) {
-        while (!value.empty()) {
-            if (value.back() == ',' || value.back() == '.' || value.back() == ';' || value.back() == ':') {
-                value.pop_back();
-                continue;
-            }
-            if (ends_with(value, utf8_comma()) || ends_with(value, utf8_period())) {
-                value.resize(value.size() - 3);
-                continue;
-            }
-            break;
-        }
-        return value;
-    }
-
-    static bool ends_with(const std::string& value, const std::string& suffix) {
-        return value.size() >= suffix.size() && value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
-    }
-
     static std::string trim_copy(std::string value) {
         auto is_space = [](unsigned char ch) { return std::isspace(ch) != 0; };
         value.erase(value.begin(), std::find_if(value.begin(), value.end(), [&](char ch) { return !is_space(static_cast<unsigned char>(ch)); }));
@@ -749,27 +802,6 @@ private:
         return value;
     }
 
-    static std::string bytes(std::initializer_list<unsigned char> values) {
-        std::string out;
-        out.reserve(values.size());
-        for (const auto value : values) {
-            out.push_back(static_cast<char>(value));
-        }
-        return out;
-    }
-
-    static std::string utf8_create() { return bytes({0xE5, 0x88, 0x9B, 0xE5, 0xBB, 0xBA}); }
-    static std::string utf8_file() { return bytes({0xE6, 0x96, 0x87, 0xE4, 0xBB, 0xB6}); }
-    static std::string utf8_write() { return bytes({0xE5, 0x86, 0x99, 0xE5, 0x85, 0xA5}); }
-    static std::string utf8_content_only_colon() { return bytes({0xE5, 0x86, 0x85, 0xE5, 0xAE, 0xB9, 0xE5, 0x8F, 0xAA, 0xE5, 0x86, 0x99, 0xEF, 0xBC, 0x9A}); }
-    static std::string utf8_content_only_ascii_colon() { return bytes({0xE5, 0x86, 0x85, 0xE5, 0xAE, 0xB9, 0xE5, 0x8F, 0xAA, 0xE5, 0x86, 0x99, 0x3A}); }
-    static std::string utf8_content_write_colon() { return bytes({0xE5, 0x86, 0x85, 0xE5, 0xAE, 0xB9, 0xE5, 0x86, 0x99, 0xE5, 0x85, 0xA5, 0xEF, 0xBC, 0x9A}); }
-    static std::string utf8_content_write_ascii_colon() { return bytes({0xE5, 0x86, 0x85, 0xE5, 0xAE, 0xB9, 0xE5, 0x86, 0x99, 0xE5, 0x85, 0xA5, 0x3A}); }
-    static std::string utf8_write_colon() { return bytes({0xE5, 0x86, 0x99, 0xE5, 0x85, 0xA5, 0xEF, 0xBC, 0x9A}); }
-    static std::string utf8_write_ascii_colon() { return bytes({0xE5, 0x86, 0x99, 0xE5, 0x85, 0xA5, 0x3A}); }
-    static std::string utf8_comma() { return bytes({0xEF, 0xBC, 0x8C}); }
-    static std::string utf8_period() { return bytes({0xE3, 0x80, 0x82}); }
-
     inline static volatile std::sig_atomic_t global_interrupted_ = 0;
 
     std::filesystem::path workspace_;
@@ -777,7 +809,9 @@ private:
     std::ostream* output_ = &std::cout;
     TuiConfig config_;
     SessionHistory history_;
-    std::vector<std::string> chat_lines_;
+    std::vector<TuiCell> transcript_cells_;
+    std::size_t streaming_assistant_index_ = npos();
+    TuiRuntimeStatus status_ = TuiRuntimeStatus::Idle;
     bool running_ = true;
     bool interrupted_ = false;
     bool color_enabled_ = true;

@@ -61,7 +61,7 @@ void test_write_file_approved_creates_file(const std::filesystem::path& root) {
     assert(result.ok());
     assert(std::filesystem::exists(root / "docs" / "output.txt"));
     assert(read_file(root / "docs" / "output.txt") == "hello write");
-    assert(runner.last_messages()[1].content.find("wrote file: docs/output.txt") != std::string::npos);
+    assert(runner.last_messages()[2].content.find("wrote file: docs/output.txt") != std::string::npos);
 }
 
 void test_write_file_denied_not_created(const std::filesystem::path& root) {
@@ -89,7 +89,7 @@ void test_write_file_denied_not_created(const std::filesystem::path& root) {
 
     assert(result.ok());
     assert(!std::filesystem::exists(root / "denied.txt"));
-    assert(runner.last_messages()[1].content == "User denied permission.");
+    assert(runner.last_messages()[2].content == "User denied permission.");
 }
 
 void test_write_file_rejects_path_escape(const std::filesystem::path& root) {
@@ -133,7 +133,7 @@ void test_edit_file_approved_replaces_text(const std::filesystem::path& root) {
 
     assert(result.ok());
     assert(read_file(root / "README.md") == "hello new world\nold again\n");
-    assert(runner.last_messages()[1].content.find("replacements: 1") != std::string::npos);
+    assert(runner.last_messages()[2].content.find("replacements: 1") != std::string::npos);
 }
 
 void test_edit_file_denied_not_modified(const std::filesystem::path& root) {
@@ -164,7 +164,7 @@ void test_edit_file_denied_not_modified(const std::filesystem::path& root) {
 
     assert(result.ok());
     assert(read_file(root / "denied_edit.txt") == "before\n");
-    assert(runner.last_messages()[1].content == "User denied permission.");
+    assert(runner.last_messages()[2].content == "User denied permission.");
 }
 
 void test_edit_file_missing_old_text_fails(const std::filesystem::path& root) {
@@ -200,6 +200,47 @@ void test_edit_file_replace_all(const std::filesystem::path& root) {
     assert(read_file(root / "replace_all.txt") == "y y y");
 }
 
+void test_edit_file_supports_multiple_exact_replacements_and_diff(const std::filesystem::path& root) {
+    write_seed_file(root / "multi.txt", "alpha\nbeta\ngamma\n");
+
+    Workspace workspace(root);
+    EditFileTool tool(workspace);
+    auto result = tool.run({
+        {"path", "multi.txt"},
+        {"old_text_1", "alpha"},
+        {"new_text_1", "ALPHA"},
+        {"old_text_2", "gamma"},
+        {"new_text_2", "GAMMA"},
+    });
+
+    assert(result.ok);
+    assert(read_file(root / "multi.txt") == "ALPHA\nbeta\nGAMMA\n");
+    assert(result.output.find("replacements: 2") != std::string::npos);
+    assert(result.output.find("diff:") != std::string::npos);
+    assert(result.output.find("-alpha") != std::string::npos);
+    assert(result.output.find("+ALPHA") != std::string::npos);
+    assert(result.output.find("-gamma") != std::string::npos);
+    assert(result.output.find("+GAMMA") != std::string::npos);
+}
+
+void test_edit_file_rejects_overlapping_multiple_replacements(const std::filesystem::path& root) {
+    write_seed_file(root / "overlap.txt", "abcdef\n");
+
+    Workspace workspace(root);
+    EditFileTool tool(workspace);
+    auto result = tool.run({
+        {"path", "overlap.txt"},
+        {"old_text_1", "abc"},
+        {"new_text_1", "ABC"},
+        {"old_text_2", "bc"},
+        {"new_text_2", "BC"},
+    });
+
+    assert(!result.ok);
+    assert(result.error.find("overlapping edits") != std::string::npos);
+    assert(read_file(root / "overlap.txt") == "abcdef\n");
+}
+
 }  // namespace
 
 int main() {
@@ -211,6 +252,8 @@ int main() {
     test_edit_file_denied_not_modified(root);
     test_edit_file_missing_old_text_fails(root);
     test_edit_file_replace_all(root);
+    test_edit_file_supports_multiple_exact_replacements_and_diff(root);
+    test_edit_file_rejects_overlapping_multiple_replacements(root);
     std::filesystem::remove_all(root);
     return 0;
 }

@@ -6,6 +6,8 @@
 #include <cassert>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string>
 
 using namespace agent_tui;
@@ -18,6 +20,53 @@ std::filesystem::path make_test_root() {
     std::filesystem::create_directories(root);
     return root;
 }
+
+std::string read_file(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+    return buffer.str();
+}
+
+#ifdef _WIN32
+
+void test_run_shell_windows_truncates_and_persists_full_output(const std::filesystem::path& root) {
+    Workspace workspace(root);
+    ShellTool tool(workspace);
+    auto result = tool.run({
+        {"command", "for /L %i in (1,1,40) do @echo 0123456789"},
+        {"cwd", "."},
+        {"timeout_seconds", "5"},
+        {"max_output_bytes", "20"},
+    });
+
+    assert(result.ok);
+    assert(result.output.find("exit_code: 0") != std::string::npos);
+    assert(result.output.find("[truncated: max_output_bytes 20]") != std::string::npos);
+    const auto marker = std::string{"full_output: "};
+    const auto start = result.output.find(marker);
+    assert(start != std::string::npos);
+    const auto path_start = start + marker.size();
+    const auto path_end = result.output.find('\n', path_start);
+    const auto output_path = result.output.substr(path_start, path_end - path_start);
+    assert(std::filesystem::exists(output_path));
+    assert(read_file(output_path).find("0123456789") != std::string::npos);
+}
+
+void test_run_shell_windows_timeout_kills_process(const std::filesystem::path& root) {
+    Workspace workspace(root);
+    ShellTool tool(workspace);
+    auto result = tool.run({
+        {"command", "ping 127.0.0.1 -n 5 > nul"},
+        {"cwd", "."},
+        {"timeout_seconds", "1"},
+    });
+
+    assert(result.ok);
+    assert(result.output.find("timeout: true") != std::string::npos);
+}
+
+#endif
 
 #ifndef _WIN32
 
@@ -95,7 +144,7 @@ void test_run_shell_denied_not_executed(const std::filesystem::path& root) {
 
     assert(result.ok());
     assert(!std::filesystem::exists(root / "marker"));
-    assert(runner.last_messages()[1].content == "User denied permission.");
+    assert(runner.last_messages()[2].content == "User denied permission.");
 }
 
 void test_run_shell_rejects_cwd_escape(const std::filesystem::path& root) {
@@ -117,6 +166,10 @@ void test_run_shell_rejects_cwd_escape(const std::filesystem::path& root) {
 
 int main() {
 #ifdef _WIN32
+    const auto root = make_test_root();
+    test_run_shell_windows_truncates_and_persists_full_output(root);
+    test_run_shell_windows_timeout_kills_process(root);
+    std::filesystem::remove_all(root);
     return 0;
 #else
     const auto root = make_test_root();

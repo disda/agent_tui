@@ -9,7 +9,7 @@ namespace agent_tui {
 
 class EchoProvider final : public Provider {
 public:
-    ProviderResponse chat(const std::vector<Message>& messages) override {
+    ProviderResponse chat(const std::vector<Message>& messages, const std::string& = {}) override {
         std::string last_user;
         for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
             if (it->role == Role::User) {

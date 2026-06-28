@@ -18,5 +18,6 @@ cmake-build-*/
 .DS_Store
 output/
 .agent_tui/sessions/
+.agent_tui/shell-output/
 .agent_tui/config.toml
 .agent-tui/sessions/

@@ -97,7 +97,7 @@ public:
 
     ToolResult run(const JsonLike& arguments) override {
         const auto path_arg = file_manager_detail::get_arg(arguments, "path", ".");
-        const auto max_entries = std::max(1, file_manager_detail::get_int_arg(arguments, "max_entries", 100));
+        const auto max_entries = (std::max)(1, file_manager_detail::get_int_arg(arguments, "max_entries", 100));
 
         std::filesystem::path path;
         try {

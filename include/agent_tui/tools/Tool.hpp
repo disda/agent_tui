@@ -38,6 +38,9 @@ public:
 
     virtual std::string name() const = 0;
     virtual std::string description() const = 0;
+    virtual std::string parameters_schema_json() const {
+        return R"({"type":"object","properties":{}})";
+    }
     virtual PermissionMode permission_mode() const = 0;
     virtual ToolResult run(const JsonLike& arguments) = 0;
 };

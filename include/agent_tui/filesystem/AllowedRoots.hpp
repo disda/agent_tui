@@ -53,8 +53,9 @@ public:
     const std::vector<std::filesystem::path>& roots() const { return roots_; }
 
     std::filesystem::path resolve(const std::string& alias_or_path) const {
-        auto path = resolve_known_aliases_ ? KnownPaths::resolve_alias(alias_or_path.empty() ? "." : alias_or_path)
-                                           : std::filesystem::path(alias_or_path.empty() ? "." : alias_or_path);
+        const auto input = alias_or_path.empty() ? std::string{"."} : alias_or_path;
+        auto path = resolve_known_aliases_ ? KnownPaths::resolve_alias(input)
+                                           : std::filesystem::path(input);
         if (path.is_relative()) {
             if (roots_.empty()) {
                 path = std::filesystem::current_path() / path;
@@ -64,6 +65,12 @@ public:
         }
 
         const auto resolved = weakly_canonical_or_absolute(path);
+        if (!is_allowed(resolved) && std::filesystem::path{input}.is_relative() && !roots_.empty()) {
+            const auto workspace_relative = weakly_canonical_or_absolute(roots_.front() / input);
+            if (is_allowed(workspace_relative)) {
+                return workspace_relative;
+            }
+        }
         if (!is_allowed(resolved)) {
             throw std::runtime_error("path is outside allowed roots: " + resolved.generic_string());
         }

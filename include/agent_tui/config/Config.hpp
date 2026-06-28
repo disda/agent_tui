@@ -13,7 +13,7 @@ struct Config {
     std::string api_key;
     std::string api_key_env;
     int timeout_seconds = 60;
-    int max_loops = 8;
+    int max_loops = 25;
 
     std::string api_key_status() const {
         if (!api_key.empty()) {
@@ -52,7 +52,7 @@ struct Config {
             "api_key = \"\"\n"
             "api_key_env = \"OPENAI_API_KEY\"\n"
             "timeout_seconds = 60\n"
-            "max_loops = 8\n";
+            "max_loops = 25\n";
     }
 };
 

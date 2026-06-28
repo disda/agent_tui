@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -12,29 +13,47 @@
 
 namespace agent_tui {
 
+struct AgentRunObserver {
+    std::function<void(const SessionEvent&)> on_event;
+    std::function<void(const std::string&)> on_assistant_delta;
+};
+
 class AgentRunner {
 public:
-    AgentRunner(Provider& provider, ToolRegistry& tools, int max_loops = 8)
+    static constexpr int kDefaultMaxLoops = 25;
+
+    AgentRunner(Provider& provider, ToolRegistry& tools, int max_loops = kDefaultMaxLoops)
         : provider_(provider), tools_(tools), max_loops_(max_loops) {}
 
-    AgentRunner(Provider& provider, ToolRegistry& tools, SessionHistory& session_history, int max_loops = 8)
+    AgentRunner(Provider& provider, ToolRegistry& tools, SessionHistory& session_history, int max_loops = kDefaultMaxLoops)
         : provider_(provider), tools_(tools), session_history_(&session_history), max_loops_(max_loops) {}
 
-    AgentRunner(Provider& provider, ToolRegistry& tools, ApprovalService& approval_service, int max_loops = 8)
+    AgentRunner(Provider& provider, ToolRegistry& tools, ApprovalService& approval_service, int max_loops = kDefaultMaxLoops)
         : provider_(provider), tools_(tools), approval_service_(&approval_service), max_loops_(max_loops) {}
 
     AgentRunner(Provider& provider,
                 ToolRegistry& tools,
                 ApprovalService& approval_service,
                 SessionHistory& session_history,
-                int max_loops = 8)
+                int max_loops = kDefaultMaxLoops)
         : provider_(provider), tools_(tools), approval_service_(&approval_service), session_history_(&session_history), max_loops_(max_loops) {}
 
     AgentResult run(std::vector<Message> messages) {
         log_initial_messages(messages);
 
         for (int step = 0; step < max_loops_; ++step) {
-            auto response = provider_.chat(messages);
+            const auto tools_schema_json = tools_.tools_schema_json(tool_exposure_policy_);
+            const bool tools_available = tools_schema_json != "[]";
+            auto response = tools_available
+                                ? provider_.chat(messages, tools_schema_json)
+                                : provider_.chat_stream(
+                                      messages,
+                                      tools_schema_json,
+                                      [&](const std::string& delta) {
+                                          if (observer_.on_assistant_delta) {
+                                              observer_.on_assistant_delta(delta);
+                                          }
+                                      });
 
             if (response.type == ProviderResponseType::Text) {
                 messages.push_back(Message{Role::Assistant, response.text, {}});
@@ -49,6 +68,7 @@ public:
                 return AgentResult::failed(response.error);
             }
 
+            messages.push_back(Message{Role::Assistant, {}, {}, response.tool_calls});
             for (const auto& call : response.tool_calls) {
                 log_tool_call(call);
 
@@ -59,6 +79,14 @@ public:
                     log_assistant(answer);
                     last_messages_ = messages;
                     return AgentResult::done(answer);
+                }
+
+                if (!tool_exposure_policy_.exposes(call.name)) {
+                    auto message = "Tool not allowed by exposure policy: " + call.name;
+                    messages.push_back(Message{Role::Tool, message, call.id});
+                    log_error(message);
+                    log_tool_result(call.id, call.name, message);
+                    continue;
                 }
 
                 auto* tool = tools_.find(call.name);
@@ -80,6 +108,7 @@ public:
                         continue;
                     }
 
+                    log_permission_requested(call);
                     auto decision = approval_service_->request(call, *tool);
                     if (decision.type == ApprovalType::Deny) {
                         auto message = decision.feedback.empty() ? std::string{"User denied permission."}
@@ -123,59 +152,70 @@ public:
 
     const std::vector<Message>& last_messages() const { return last_messages_; }
 
+    void set_tool_exposure_policy(ToolExposurePolicy policy) {
+        tool_exposure_policy_ = std::move(policy);
+    }
+
+    void set_observer(AgentRunObserver observer) {
+        observer_ = std::move(observer);
+    }
+
 private:
+    void record_event(SessionEvent event) {
+        if (session_history_ != nullptr) {
+            session_history_->add(event);
+        }
+        if (observer_.on_event) {
+            observer_.on_event(event);
+        }
+    }
+
     void log_initial_messages(const std::vector<Message>& messages) {
         if (session_history_ == nullptr) {
             return;
         }
         for (const auto& message : messages) {
             if (message.role == Role::User) {
-                session_history_->add(SessionEvent::user_input(message.content));
+                record_event(SessionEvent::user_input(message.content));
             }
         }
     }
 
     void log_assistant(const std::string& content) {
-        if (session_history_ != nullptr) {
-            session_history_->add(SessionEvent::assistant_message(content));
-        }
+        record_event(SessionEvent::assistant_message(content));
     }
 
     void log_tool_call(const ToolCall& call) {
-        if (session_history_ != nullptr) {
-            session_history_->add(SessionEvent::tool_call(call));
-        }
+        record_event(SessionEvent::tool_call(call));
+    }
+
+    void log_permission_requested(const ToolCall& call) {
+        record_event(SessionEvent::permission_requested(call));
     }
 
     void log_tool_result(const std::string& call_id, const std::string& tool_name, const std::string& content) {
-        if (session_history_ != nullptr) {
-            session_history_->add(SessionEvent::tool_result(call_id, tool_name, content));
-        }
+        record_event(SessionEvent::tool_result(call_id, tool_name, content));
     }
 
     void log_permission_denied(const std::string& call_id, const std::string& tool_name, const std::string& content) {
-        if (session_history_ != nullptr) {
-            session_history_->add(SessionEvent::permission_denied(call_id, tool_name, content));
-        }
+        record_event(SessionEvent::permission_denied(call_id, tool_name, content));
     }
 
     void log_user_feedback(const std::string& call_id, const std::string& tool_name, const std::string& content) {
-        if (session_history_ != nullptr) {
-            session_history_->add(SessionEvent::user_feedback(call_id, tool_name, content));
-        }
+        record_event(SessionEvent::user_feedback(call_id, tool_name, content));
     }
 
     void log_error(const std::string& content) {
-        if (session_history_ != nullptr) {
-            session_history_->add(SessionEvent::error(content));
-        }
+        record_event(SessionEvent::error(content));
     }
 
     Provider& provider_;
     ToolRegistry& tools_;
     ApprovalService* approval_service_ = nullptr;
     SessionHistory* session_history_ = nullptr;
-    int max_loops_ = 8;
+    ToolExposurePolicy tool_exposure_policy_;
+    AgentRunObserver observer_;
+    int max_loops_ = kDefaultMaxLoops;
     std::vector<Message> last_messages_;
 };
 

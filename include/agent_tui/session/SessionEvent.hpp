@@ -15,6 +15,7 @@ enum class SessionEventType {
     UserInput,
     AssistantMessage,
     ToolCall,
+    PermissionRequested,
     ToolResult,
     PermissionDenied,
     UserFeedback,
@@ -29,6 +30,8 @@ inline std::string session_event_type_name(SessionEventType type) {
             return "assistant_message";
         case SessionEventType::ToolCall:
             return "tool_call";
+        case SessionEventType::PermissionRequested:
+            return "permission_requested";
         case SessionEventType::ToolResult:
             return "tool_result";
         case SessionEventType::PermissionDenied:
@@ -122,6 +125,15 @@ struct SessionEvent {
     static SessionEvent tool_call(const ToolCall& call) {
         SessionEvent event;
         event.type = SessionEventType::ToolCall;
+        event.tool_call_id = call.id;
+        event.tool_name = call.name;
+        event.arguments = call.arguments;
+        return event;
+    }
+
+    static SessionEvent permission_requested(const ToolCall& call) {
+        SessionEvent event;
+        event.type = SessionEventType::PermissionRequested;
         event.tool_call_id = call.id;
         event.tool_name = call.name;
         event.arguments = call.arguments;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -47,7 +48,17 @@ class Provider {
 public:
     virtual ~Provider() = default;
 
-    virtual ProviderResponse chat(const std::vector<Message>& messages) = 0;
+    virtual ProviderResponse chat(const std::vector<Message>& messages, const std::string& tools_schema_json = {}) = 0;
+
+    virtual ProviderResponse chat_stream(const std::vector<Message>& messages,
+                                         const std::string& tools_schema_json,
+                                         const std::function<void(const std::string&)>& on_delta) {
+        auto response = chat(messages, tools_schema_json);
+        if (response.type == ProviderResponseType::Text && !response.text.empty()) {
+            on_delta(response.text);
+        }
+        return response;
+    }
 };
 
 }  // namespace agent_tui

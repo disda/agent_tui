@@ -9,6 +9,10 @@
 #include <sstream>
 #include <string>
 
+#ifdef _WIN32
+#include <crtdbg.h>
+#endif
+
 using namespace agent_tui;
 
 namespace {
@@ -183,6 +187,10 @@ void test_move_files_by_extension_rejects_escape() {
 }
 
 int main() {
+#ifdef _WIN32
+    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+#endif
     test_known_paths_resolve_aliases();
     test_allowed_roots_allows_workspace_and_rejects_escape();
     test_list_path_lists_files();

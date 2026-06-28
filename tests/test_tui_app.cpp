@@ -27,32 +27,21 @@ std::string bytes(std::initializer_list<unsigned char> values) {
     return out;
 }
 
-std::string utf8_hello() {
-    return bytes({0xE4, 0xBD, 0xA0, 0xE5, 0xA5, 0xBD});
-}
-
-std::string utf8_chinese_create_request() {
+std::string zh_implement_demo() {
     return bytes({
-        0xE5, 0x88, 0x9B, 0xE5, 0xBB, 0xBA, 0x20,
-        'h', 'e', 'l', 'l', 'o', '.', 't', 'x', 't', 0x20,
-        0xE6, 0x96, 0x87, 0xE4, 0xBB, 0xB6,
-        0xEF, 0xBC, 0x8C,
-        0xE5, 0x86, 0x85, 0xE5, 0xAE, 0xB9,
-        0xE5, 0x8F, 0xAA, 0xE5, 0x86, 0x99,
-        0xEF, 0xBC, 0x9A,
-        0xE4, 0xBD, 0xA0, 0xE5, 0xA5, 0xBD,
-        '\n', '/', 'e', 'x', 'i', 't', '\n'
+        0xE5,0xAE,0x9E,0xE7,0x8E,0xB0,
+        0xE4,0xB8,0x80,0xE4,0xB8,0xAA,
+        0xE7,0xAE,0x80,0xE5,0x8D,0x95,
+        0xE4,0xBB,0xA3,0xE7,0xA0,0x81,
+        ' ','d','e','m','o'
     });
 }
 
-std::string utf8_write_file_without_name_request() {
+std::string zh_current_directory_question() {
     return bytes({
-        0xE5, 0x86, 0x99,
-        0xE4, 0xB8, 0xAA,
-        0xE6, 0x96, 0x87, 0xE4, 0xBB, 0xB6,
-        0xE5, 0x86, 0x99, 0xE5, 0x85, 0xA5,
-        0xE4, 0xBD, 0xA0, 0xE5, 0xA5, 0xBD,
-        '\n', '/', 'e', 'x', 'i', 't', '\n'
+        0xE7,0x8E,0xB0,0xE5,0x9C,0xA8,
+        0xE4,0xBB,0x80,0xE4,0xB9,0x88,
+        0xE7,0x9B,0xAE,0xE5,0xBD,0x95
     });
 }
 
@@ -152,7 +141,7 @@ void test_run_accepts_scripted_input_and_uses_mock_provider() {
     std::filesystem::remove_all(root);
 }
 
-void test_render_uses_compact_chat_layout() {
+void test_render_uses_transcript_cell_layout() {
     const auto root = make_test_root();
     std::istringstream input("/status\n/exit\n");
     std::ostringstream output;
@@ -164,7 +153,7 @@ void test_render_uses_compact_chat_layout() {
     assert(code == 0);
     assert(output.str().find("Agent TUI") != std::string::npos);
     assert(output.str().find("[IDLE]") != std::string::npos);
-    assert(output.str().find("Recent messages") != std::string::npos);
+    assert(output.str().find("Transcript") != std::string::npos);
     assert(output.str().find("Commands") != std::string::npos);
     std::filesystem::remove_all(root);
 }
@@ -177,53 +166,18 @@ void test_windows_code_page_input_can_be_normalized_to_utf8() {
 #endif
 }
 
-void test_chinese_create_file_request_executes_locally() {
+void test_system_prompt_includes_workspace_path() {
     const auto root = make_test_root();
-    std::istringstream input(utf8_chinese_create_request());
-    std::ostringstream output;
+    Workspace workspace(root);
+    const auto prompt = TuiApp::coding_agent_system_prompt(workspace);
 
-    TuiApp app(root);
-    app.set_streams(input, output);
-    const auto code = app.run();
-
-    assert(code == 0);
-    assert(std::filesystem::exists(root / "hello.txt"));
-    {
-        std::ifstream file(root / "hello.txt", std::ios::binary);
-        std::ostringstream buffer;
-        buffer << file.rdbuf();
-        assert(buffer.str() == utf8_hello());
-    }
-    std::filesystem::remove_all(root);
-}
-
-void test_chinese_write_file_without_name_defaults_to_hello_txt() {
-    const auto root = make_test_root();
-    std::istringstream input(utf8_write_file_without_name_request());
-    std::ostringstream output;
-
-    TuiApp app(root);
-    app.set_streams(input, output);
-    const auto code = app.run();
-
-    assert(code == 0);
-    assert(std::filesystem::exists(root / "hello.txt"));
-    {
-        std::ifstream file(root / "hello.txt", std::ios::binary);
-        std::ostringstream buffer;
-        buffer << file.rdbuf();
-        assert(buffer.str() == utf8_hello());
-    }
+    assert(prompt.find("Current working directory: " + workspace.root().generic_string()) != std::string::npos);
     std::filesystem::remove_all(root);
 }
 
 void test_tui_runs_agent_tool_loop_for_code_demo() {
     const auto root = make_test_root();
-    std::istringstream input(
-        "/api provider mock-agent-demo\n"
-        "实现一个简单代码 demo\n"
-        "y\n"
-        "/exit\n");
+    std::istringstream input("/api provider mock-agent-demo\n" + zh_implement_demo() + "\ny\n/exit\n");
     std::ostringstream output;
 
     TuiApp app(root);
@@ -239,7 +193,32 @@ void test_tui_runs_agent_tool_loop_for_code_demo() {
         assert(buffer.str().find("hello from agent_tui") != std::string::npos);
     }
     assert(output.str().find("Approve write_file") != std::string::npos);
+    assert(output.str().find("[THINKING]") != std::string::npos);
+    assert(output.str().find("[WAITING_APPROVAL]") != std::string::npos);
+    assert(output.str().find("[RUNNING_TOOL]") != std::string::npos);
+    assert(output.str().find("agent > thinking") != std::string::npos);
+    assert(output.str().find("tool call > write_file") != std::string::npos);
+    assert(output.str().find("approval required > write_file") != std::string::npos);
+    assert(output.str().find("tool result > write_file") != std::string::npos);
+    assert(output.str().find("tool_call >") == std::string::npos);
+    assert(output.str().find("tool_result >") == std::string::npos);
     assert(output.str().find("demo.py is ready") != std::string::npos);
+    std::filesystem::remove_all(root);
+}
+
+void test_directory_question_is_not_handled_by_local_intent_router() {
+    const auto root = make_test_root();
+    std::istringstream input("/api provider mock\n" + zh_current_directory_question() + "\n/exit\n");
+    std::ostringstream output;
+
+    TuiApp app(root);
+    app.set_streams(input, output);
+    const auto code = app.run();
+
+    assert(code == 0);
+    assert(output.str().find("mock assistant:") != std::string::npos);
+    assert(output.str().find("local intent") == std::string::npos);
+    assert(output.str().find("tool > list_dir") == std::string::npos);
     std::filesystem::remove_all(root);
 }
 
@@ -253,10 +232,10 @@ int main() {
     test_clear_command_resets_history_and_interrupt();
     test_exit_command_stops_app();
     test_run_accepts_scripted_input_and_uses_mock_provider();
-    test_render_uses_compact_chat_layout();
+    test_render_uses_transcript_cell_layout();
     test_windows_code_page_input_can_be_normalized_to_utf8();
-    test_chinese_create_file_request_executes_locally();
-    test_chinese_write_file_without_name_defaults_to_hello_txt();
+    test_system_prompt_includes_workspace_path();
     test_tui_runs_agent_tool_loop_for_code_demo();
+    test_directory_question_is_not_handled_by_local_intent_router();
     return 0;
 }

@@ -16,7 +16,7 @@ class PlaceholderProvider final : public Provider {
 public:
     explicit PlaceholderProvider(std::string provider_name) : provider_name_(std::move(provider_name)) {}
 
-    ProviderResponse chat(const std::vector<Message>&) override {
+    ProviderResponse chat(const std::vector<Message>&, const std::string& = {}) override {
         return ProviderResponse::error_response(
             "provider '" + provider_name_ + "' is configured but the real HTTP adapter is not implemented yet. "
             "Use provider=mock for local terminal chat, or implement the provider adapter next.");

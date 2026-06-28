@@ -59,6 +59,12 @@ void test_api_key_is_not_exposed() {
     assert(summary.find("sk-test-secret-value") == std::string::npos);
 }
 
+void test_default_and_example_max_loops_are_twenty_five() {
+    Config config;
+    assert(config.max_loops == 25);
+    assert(Config::example_toml().find("max_loops = 25") != std::string::npos);
+}
+
 void test_inline_api_key_can_be_loaded_from_project_config() {
     const auto root = make_test_root();
     const auto project_config = root / "project" / ".agent_tui" / "config.toml";
@@ -121,6 +127,7 @@ void test_provider_factory_placeholder_for_unknown_provider() {
 int main() {
     test_project_config_overrides_user_config();
     test_api_key_is_not_exposed();
+    test_default_and_example_max_loops_are_twenty_five();
     test_inline_api_key_can_be_loaded_from_project_config();
     test_write_example_config();
     test_init_project_config_creates_agent_tui_directory();

@@ -1,11 +1,53 @@
 #include "agent_tui/llm/OpenAICompatibleProvider.hpp"
 #include "agent_tui/llm/ProviderFactory.hpp"
+#include "agent_tui/tools/FileTools.hpp"
+#include "agent_tui/tools/ShellTool.hpp"
+#include "agent_tui/tools/ToolRegistry.hpp"
+#include "agent_tui/tools/WriteEditTools.hpp"
+#include "agent_tui/workspace/Workspace.hpp"
 
 #include <cassert>
+#include <chrono>
 #include <filesystem>
+#include <memory>
 #include <string>
 
 using namespace agent_tui;
+
+namespace {
+
+class CustomSchemaTool final : public Tool {
+public:
+    std::string name() const override { return "custom_schema_tool"; }
+    std::string description() const override { return "Custom schema tool for registry tests."; }
+    PermissionMode permission_mode() const override { return PermissionMode::Auto; }
+    std::string parameters_schema_json() const override {
+        return R"({"type":"object","properties":{"value":{"type":"string"}},"required":["value"]})";
+    }
+    ToolResult run(const JsonLike&) override { return ToolResult::success("ok"); }
+};
+
+std::filesystem::path make_test_root() {
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    auto root = std::filesystem::temp_directory_path() / ("agent_tui_openai_provider_" + std::to_string(stamp));
+    std::filesystem::create_directories(root);
+    return root;
+}
+
+ToolRegistry make_core_registry(const Workspace& workspace) {
+    ToolRegistry registry;
+    registry.register_tool(std::make_unique<WorkspaceInfoTool>(workspace));
+    registry.register_tool(std::make_unique<ListDirTool>(workspace));
+    registry.register_tool(std::make_unique<ReadFileTool>(workspace));
+    registry.register_tool(std::make_unique<GlobFilesTool>(workspace));
+    registry.register_tool(std::make_unique<SearchTextTool>(workspace));
+    registry.register_tool(std::make_unique<WriteFileTool>(workspace));
+    registry.register_tool(std::make_unique<EditFileTool>(workspace));
+    registry.register_tool(std::make_unique<ShellTool>(workspace));
+    return registry;
+}
+
+}  // namespace
 
 void test_build_request_body_contains_model_and_messages() {
     Config config;
@@ -76,19 +118,88 @@ void test_parse_tool_call_response() {
     assert(response.tool_calls[0].arguments.at("content") == "你好");
 }
 
+void test_parse_tool_call_arguments_with_non_string_values() {
+    const std::string body = R"({
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call_read",
+                            "type": "function",
+                            "function": {
+                                "name": "read_file",
+                                "arguments": "{\"path\":\"TODO.md\",\"limit\":200,\"ignoreCase\":true,\"options\":{\"mode\":\"fast\"},\"globs\":[\"*.cpp\",\"*.hpp\"]}"
+                            }
+                        }
+                    ]
+                }
+            }
+        ]
+    })";
+
+    const auto response = OpenAICompatibleProvider::parse_response_body(body);
+    assert(response.type == ProviderResponseType::ToolCalls);
+    assert(response.tool_calls.size() == 1);
+    assert(response.tool_calls[0].arguments.at("path") == "TODO.md");
+    assert(response.tool_calls[0].arguments.at("limit") == "200");
+    assert(response.tool_calls[0].arguments.at("ignoreCase") == "true");
+    assert(response.tool_calls[0].arguments.at("options") == "{\"mode\":\"fast\"}");
+    assert(response.tool_calls[0].arguments.at("globs") == "[\"*.cpp\",\"*.hpp\"]");
+}
+
 void test_request_body_includes_tool_definitions_and_tool_results() {
+    const auto root = make_test_root();
+    Workspace workspace(root);
+    auto registry = make_core_registry(workspace);
+
     Config config;
     config.model = "gpt-test";
+    ToolCall call;
+    call.id = "call_write";
+    call.name = "write_file";
+    call.arguments = {{"path", "hello.txt"}, {"content", "hello"}};
 
     const auto body = OpenAICompatibleProvider::build_request_body(config, {
         Message{Role::System, "Use tools when useful.", {}},
         Message{Role::User, "create a file", {}},
+        Message{Role::Assistant, "", "", {call}},
         Message{Role::Tool, "wrote file: hello.txt", "call_write"},
-    });
+    }, registry.tools_schema_json());
 
     assert(body.find("\"tools\"") != std::string::npos);
+    assert(body.find("\"workspace_info\"") != std::string::npos);
+    assert(body.find("\"list_dir\"") != std::string::npos);
+    assert(body.find("\"read_file\"") != std::string::npos);
+    assert(body.find("\"glob_files\"") != std::string::npos);
+    assert(body.find("\"search_text\"") != std::string::npos);
     assert(body.find("\"write_file\"") != std::string::npos);
-    assert(body.find("Tool result") != std::string::npos);
+    assert(body.find("\"edit_file\"") != std::string::npos);
+    assert(body.find("\"run_shell\"") != std::string::npos);
+    assert(body.find("\"role\":\"assistant\"") != std::string::npos);
+    assert(body.find("\"tool_calls\"") != std::string::npos);
+    assert(body.find("\"role\":\"tool\"") != std::string::npos);
+    assert(body.find("\"tool_call_id\":\"call_write\"") != std::string::npos);
+    assert(body.find("wrote file: hello.txt") != std::string::npos);
+    std::filesystem::remove_all(root);
+}
+
+void test_request_body_uses_tool_registry_schema() {
+    Config config;
+    config.model = "gpt-test";
+    ToolRegistry registry;
+    registry.register_tool(std::make_unique<CustomSchemaTool>());
+
+    const auto body = OpenAICompatibleProvider::build_request_body(config, {
+        Message{Role::User, "use custom tool", {}},
+    }, registry.tools_schema_json());
+
+    assert(body.find("\"tools\"") != std::string::npos);
+    assert(body.find("\"custom_schema_tool\"") != std::string::npos);
+    assert(body.find("\"value\"") != std::string::npos);
+    assert(body.find("\"write_file\"") == std::string::npos);
+    assert(body.find("\"run_shell\"") == std::string::npos);
 }
 
 void test_streaming_request_body_can_omit_tools() {
@@ -134,7 +245,9 @@ int main() {
     test_parse_text_response();
     test_parse_error_response();
     test_parse_tool_call_response();
+    test_parse_tool_call_arguments_with_non_string_values();
     test_request_body_includes_tool_definitions_and_tool_results();
+    test_request_body_uses_tool_registry_schema();
     test_streaming_request_body_can_omit_tools();
     test_curl_config_path_uses_forward_slashes();
     test_inline_api_key_takes_precedence_over_env_key();

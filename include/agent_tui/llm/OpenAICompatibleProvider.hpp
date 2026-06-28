@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -105,30 +106,19 @@ inline std::string extract_json_string_field(const std::string& body, const std:
 inline JsonLike parse_flat_json_string_object(const std::string& body) {
     JsonLike result;
     std::size_t pos = 0;
-    while (pos < body.size()) {
-        pos = body.find('"', pos);
-        if (pos == std::string::npos) {
-            break;
+    auto skip_ws = [&](std::size_t& index) {
+        while (index < body.size() && std::isspace(static_cast<unsigned char>(body[index])) != 0) {
+            ++index;
         }
-        const auto key_start = pos + 1;
-        pos = body.find('"', key_start);
-        if (pos == std::string::npos) {
-            break;
-        }
-        const auto key = body.substr(key_start, pos - key_start);
-        pos = body.find(':', pos + 1);
-        if (pos == std::string::npos) {
-            break;
-        }
-        pos = body.find('"', pos + 1);
-        if (pos == std::string::npos) {
-            break;
-        }
-
+    };
+    auto parse_json_string = [&](std::size_t& index) {
         std::string value;
         bool escaped = false;
-        for (++pos; pos < body.size(); ++pos) {
-            const char ch = body[pos];
+        if (index >= body.size() || body[index] != '"') {
+            return value;
+        }
+        for (++index; index < body.size(); ++index) {
+            const char ch = body[index];
             if (escaped) {
                 value.push_back('\\');
                 value.push_back(ch);
@@ -140,14 +130,130 @@ inline JsonLike parse_flat_json_string_object(const std::string& body) {
                 continue;
             }
             if (ch == '"') {
-                ++pos;
-                break;
+                ++index;
+                return json_unescape_string(value);
             }
             value.push_back(ch);
         }
-        result[key] = json_unescape_string(value);
+        return json_unescape_string(value);
+    };
+    auto parse_compound = [&](std::size_t& index) {
+        const char open = body[index];
+        const char close = open == '{' ? '}' : ']';
+        const auto start = index;
+        int depth = 0;
+        bool in_string = false;
+        bool escaped = false;
+        for (; index < body.size(); ++index) {
+            const char ch = body[index];
+            if (in_string) {
+                if (escaped) {
+                    escaped = false;
+                } else if (ch == '\\') {
+                    escaped = true;
+                } else if (ch == '"') {
+                    in_string = false;
+                }
+                continue;
+            }
+            if (ch == '"') {
+                in_string = true;
+                continue;
+            }
+            if (ch == open) {
+                ++depth;
+            } else if (ch == close) {
+                --depth;
+                if (depth == 0) {
+                    ++index;
+                    return body.substr(start, index - start);
+                }
+            }
+        }
+        return body.substr(start);
+    };
+
+    while (pos < body.size()) {
+        skip_ws(pos);
+        if (pos < body.size() && (body[pos] == '{' || body[pos] == ',')) {
+            ++pos;
+            continue;
+        }
+        pos = body.find('"', pos);
+        if (pos == std::string::npos) {
+            break;
+        }
+        auto key = parse_json_string(pos);
+        skip_ws(pos);
+        if (pos >= body.size() || body[pos] != ':') {
+            break;
+        }
+        ++pos;
+        skip_ws(pos);
+        if (pos == std::string::npos) {
+            break;
+        }
+
+        if (pos < body.size() && body[pos] == '"') {
+            result[key] = parse_json_string(pos);
+            continue;
+        }
+        if (pos < body.size() && (body[pos] == '{' || body[pos] == '[')) {
+            result[key] = parse_compound(pos);
+            continue;
+        }
+
+        const auto value_start = pos;
+        while (pos < body.size() && body[pos] != ',' && body[pos] != '}') {
+            ++pos;
+        }
+        auto value = body.substr(value_start, pos - value_start);
+        value.erase(value.begin(), std::find_if(value.begin(), value.end(), [](unsigned char ch) {
+            return std::isspace(ch) == 0;
+        }));
+        value.erase(std::find_if(value.rbegin(), value.rend(), [](unsigned char ch) {
+            return std::isspace(ch) == 0;
+        }).base(), value.end());
+        result[key] = value;
     }
     return result;
+}
+
+inline std::string flat_json_string_object(const JsonLike& object) {
+    std::ostringstream out;
+    out << "{";
+    bool first = true;
+    for (const auto& item : object) {
+        if (!first) {
+            out << ",";
+        }
+        first = false;
+        out << "\"" << json_escape_string(item.first) << "\":\"" << json_escape_string(item.second) << "\"";
+    }
+    out << "}";
+    return out.str();
+}
+
+inline std::string tool_calls_json(const std::vector<ToolCall>& calls) {
+    std::ostringstream out;
+    out << "[";
+    bool first = true;
+    for (const auto& call : calls) {
+        if (!first) {
+            out << ",";
+        }
+        first = false;
+        out << "{";
+        out << "\"id\":\"" << json_escape_string(call.id) << "\",";
+        out << "\"type\":\"function\",";
+        out << "\"function\":{";
+        out << "\"name\":\"" << json_escape_string(call.name) << "\",";
+        out << "\"arguments\":\"" << json_escape_string(flat_json_string_object(call.arguments)) << "\"";
+        out << "}";
+        out << "}";
+    }
+    out << "]";
+    return out.str();
 }
 
 inline std::vector<ToolCall> extract_tool_calls(const std::string& body) {
@@ -164,16 +270,6 @@ inline std::vector<ToolCall> extract_tool_calls(const std::string& body) {
         calls.push_back(std::move(call));
     }
     return calls;
-}
-
-inline std::string tool_definitions_json() {
-    return R"([
-{"type":"function","function":{"name":"list_dir","description":"List files and directories under the workspace.","parameters":{"type":"object","properties":{"path":{"type":"string","description":"Workspace-relative directory path."}}}}},
-{"type":"function","function":{"name":"read_file","description":"Read a UTF-8 text file from the workspace.","parameters":{"type":"object","properties":{"path":{"type":"string"},"max_bytes":{"type":"string"}},"required":["path"]}}},
-{"type":"function","function":{"name":"glob_files","description":"Find workspace files matching a glob pattern.","parameters":{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"max_matches":{"type":"string"}},"required":["pattern"]}}},
-{"type":"function","function":{"name":"search_text","description":"Search text in workspace files.","parameters":{"type":"object","properties":{"query":{"type":"string"},"path":{"type":"string"},"max_matches":{"type":"string"}},"required":["query"]}}},
-{"type":"function","function":{"name":"write_file","description":"Write a UTF-8 text file inside the workspace.","parameters":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"create_parent_dirs":{"type":"string","description":"true to create parent directories"}},"required":["path","content"]}}},
-{"type":"function","function":{"name":"edit_file","description":"Replace text inside a workspace file.","parameters":{"type":"object","properties":{"path":{"type":"string"},"old_text":{"type":"string"},"new_text":{"type":"string"},"replace_all":{"type":"string"}},"required":["path","old_text","new_text"]}}}])";
 }
 
 inline std::string shell_quote(const std::filesystem::path& path) {
@@ -218,14 +314,14 @@ class OpenAICompatibleProvider final : public Provider {
 public:
     explicit OpenAICompatibleProvider(Config config) : config_(std::move(config)) {}
 
-    ProviderResponse chat(const std::vector<Message>& messages) override {
+    ProviderResponse chat(const std::vector<Message>& messages, const std::string& tools_schema_json = {}) override {
         const auto api_key = resolve_api_key(config_);
         if (api_key.empty()) {
             return ProviderResponse::error_response("missing API key: set api_key or api_key_env");
         }
 
         const auto api_base = config_.api_base.empty() ? std::string{"https://api.openai.com/v1"} : config_.api_base;
-        const auto request_body = build_request_body(config_, messages);
+        const auto request_body = build_request_body(config_, messages, tools_schema_json);
         if (std::getenv("AGENT_TUI_DEBUG_REQUEST") != nullptr) {
             std::filesystem::create_directories("output");
             openai_compatible_detail::write_file(std::filesystem::path{"output"} / "last-openai-request.json", request_body);
@@ -272,14 +368,16 @@ public:
         return parse_response_body(response_body);
     }
 
-    ProviderResponse chat_stream(const std::vector<Message>& messages, const std::function<void(const std::string&)>& on_delta) {
+    ProviderResponse chat_stream(const std::vector<Message>& messages,
+                                 const std::string& tools_schema_json,
+                                 const std::function<void(const std::string&)>& on_delta) override {
         const auto api_key = resolve_api_key(config_);
         if (api_key.empty()) {
             return ProviderResponse::error_response("missing API key: set api_key or api_key_env");
         }
 
         const auto api_base = config_.api_base.empty() ? std::string{"https://api.openai.com/v1"} : config_.api_base;
-        const auto request_body = build_request_body(config_, messages, false, true);
+        const auto request_body = build_request_body(config_, messages, tools_schema_json, true, true);
         const auto temp_dir = std::filesystem::temp_directory_path() / "agent_tui_openai_compatible";
         std::filesystem::create_directories(temp_dir);
         const auto stamp = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
@@ -317,6 +415,8 @@ public:
 
         std::string accumulated;
         std::string raw;
+        ToolCall streamed_tool_call;
+        bool saw_streamed_tool_call = false;
         char buffer[4096];
         while (std::fgets(buffer, sizeof(buffer), pipe) != nullptr) {
             std::string line(buffer);
@@ -349,6 +449,19 @@ public:
                     on_delta(piece);
                 }
             }
+            if (line.find("\"tool_calls\"") != std::string::npos) {
+                saw_streamed_tool_call = true;
+                const auto id = openai_compatible_detail::extract_json_string_field(line, "id");
+                const auto name = openai_compatible_detail::extract_json_string_field(line, "name");
+                const auto arguments = openai_compatible_detail::extract_json_string_field(line, "arguments");
+                if (!id.empty()) {
+                    streamed_tool_call.id = id;
+                }
+                if (!name.empty()) {
+                    streamed_tool_call.name = name;
+                }
+                streamed_tool_call.arguments["_raw"] += arguments;
+            }
         }
 
 #ifdef _WIN32
@@ -366,10 +479,22 @@ public:
         if (!accumulated.empty()) {
             return ProviderResponse::text_response(accumulated);
         }
+        if (saw_streamed_tool_call && !streamed_tool_call.name.empty()) {
+            const auto raw_arguments = streamed_tool_call.arguments["_raw"];
+            streamed_tool_call.arguments = openai_compatible_detail::parse_flat_json_string_object(raw_arguments);
+            if (streamed_tool_call.id.empty()) {
+                streamed_tool_call.id = "stream_tool_call";
+            }
+            return ProviderResponse::tool_calls_response({streamed_tool_call});
+        }
         return parse_response_body(raw);
     }
 
-    static std::string build_request_body(const Config& config, const std::vector<Message>& messages, bool include_tools = true, bool stream = false) {
+    static std::string build_request_body(const Config& config,
+                                          const std::vector<Message>& messages,
+                                          const std::string& tools_schema_json = {},
+                                          bool include_tools = true,
+                                          bool stream = false) {
         std::ostringstream out;
         out << "{";
         out << "\"model\":\"" << openai_compatible_detail::json_escape_string(config.model) << "\",";
@@ -382,8 +507,13 @@ public:
             first = false;
             out << "{";
             if (message.role == Role::Tool) {
-                out << "\"role\":\"user\",";
-                out << "\"content\":\"" << openai_compatible_detail::json_escape_string("Tool result for " + message.tool_call_id + ":\n" + message.content) << "\"";
+                out << "\"role\":\"tool\",";
+                out << "\"tool_call_id\":\"" << openai_compatible_detail::json_escape_string(message.tool_call_id) << "\",";
+                out << "\"content\":\"" << openai_compatible_detail::json_escape_string(message.content) << "\"";
+            } else if (message.role == Role::Assistant && !message.tool_calls.empty()) {
+                out << "\"role\":\"assistant\",";
+                out << "\"content\":\"" << openai_compatible_detail::json_escape_string(message.content) << "\",";
+                out << "\"tool_calls\":" << openai_compatible_detail::tool_calls_json(message.tool_calls);
             } else {
                 out << "\"role\":\"" << openai_compatible_detail::role_to_string(message.role) << "\",";
                 out << "\"content\":\"" << openai_compatible_detail::json_escape_string(message.content) << "\"";
@@ -391,13 +521,17 @@ public:
             out << "}";
         }
         out << "],";
-        if (include_tools) {
-            out << "\"tools\":" << openai_compatible_detail::tool_definitions_json() << ",";
+        if (include_tools && !tools_schema_json.empty()) {
+            out << "\"tools\":" << tools_schema_json << ",";
             out << "\"tool_choice\":\"auto\",";
         }
         out << "\"stream\":" << (stream ? "true" : "false");
         out << "}";
         return out.str();
+    }
+
+    static std::string build_request_body(const Config& config, const std::vector<Message>& messages, bool include_tools, bool stream = false) {
+        return build_request_body(config, messages, std::string{}, include_tools, stream);
     }
 
     static ProviderResponse parse_response_body(const std::string& body) {
