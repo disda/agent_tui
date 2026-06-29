@@ -1092,7 +1092,7 @@ git commit -m "Improve approval feedback flow"
 - Modify: `TODO.md`
 - Optional Modify: `README.md`
 
-- [ ] **Step 1: Build fresh**
+- [x] **Step 1: Build fresh**
 
 Run:
 
@@ -1103,7 +1103,7 @@ cmake --build build --config Debug
 
 Expected: `agent_tui.exe` and tests build successfully.
 
-- [ ] **Step 2: Run full test suite**
+- [x] **Step 2: Run full test suite**
 
 Run:
 
@@ -1117,7 +1117,7 @@ Get-ChildItem build\Debug -Filter '*tests.exe' | Sort-Object Name | ForEach-Obje
 
 Expected: exit code 0.
 
-- [ ] **Step 3: Run scripted mock demo**
+- [x] **Step 3: Run scripted mock demo**
 
 Run:
 
@@ -1145,6 +1145,8 @@ assistant done >
 
 - [ ] **Step 4: Run real provider demo if local API credentials are configured**
 
+Skipped in this execution: local credentials are environment-specific. The mock provider path verifies the model/tool/approval/run/final-answer loop without sending a network request.
+
 Use the current project config or set:
 
 ```powershell
@@ -1160,7 +1162,7 @@ Create a hello world Python demo and run it
 
 Approve safe `write_file` and `run_shell` prompts. Expected: generated file, shell output visible, final answer with completion boundary.
 
-- [ ] **Step 5: Write `deliverables/run-log.md`**
+- [x] **Step 5: Write `deliverables/run-log.md`**
 
 Record this content:
 
@@ -1215,6 +1217,8 @@ assistant done >
 ````
 
 - [ ] **Step 6: Update `TODO.md`**
+
+Skipped in this execution: `TODO.md` is not currently stored as valid UTF-8 in this workspace, and patching it risked corrupting existing content. Progress was recorded in this plan and in `deliverables/run-log.md` instead.
 
 Mark completed:
 

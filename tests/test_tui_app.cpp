@@ -235,7 +235,7 @@ void test_system_prompt_includes_workspace_path() {
 
 void test_tui_runs_agent_tool_loop_for_code_demo() {
     const auto root = make_test_root();
-    std::istringstream input("/api provider mock-agent-demo\n" + zh_implement_demo() + "\ny\n/exit\n");
+    std::istringstream input("/api provider mock-agent-demo\n" + zh_implement_demo() + "\ny\ny\n/exit\n");
     std::ostringstream output;
 
     TuiApp app(root);
@@ -258,10 +258,15 @@ void test_tui_runs_agent_tool_loop_for_code_demo() {
     assert(output.str().find("tool call > write_file") != std::string::npos);
     assert(output.str().find("approval required > write_file") != std::string::npos);
     assert(output.str().find("tool result > write_file") != std::string::npos);
+    assert(output.str().find("tool call > run_shell") != std::string::npos);
+    assert(output.str().find("approval required > run_shell") != std::string::npos);
+    assert(output.str().find("tool result > run_shell") != std::string::npos);
+    assert(output.str().find("hello from agent_tui") != std::string::npos);
+    assert(output.str().find("tool result > run_shell exit_code: 0; stdout: hello from agent_tui") != std::string::npos);
     assert(output.str().find("tool_call >") == std::string::npos);
     assert(output.str().find("tool_result >") == std::string::npos);
-    assert(output.str().find("assistant done > demo.py is ready") != std::string::npos);
-    assert(output.str().find("demo.py is ready") != std::string::npos);
+    assert(output.str().find("assistant done > demo.py is ready and was executed") != std::string::npos);
+    assert(output.str().find("demo.py is ready and was executed") != std::string::npos);
     std::filesystem::remove_all(root);
 }
 

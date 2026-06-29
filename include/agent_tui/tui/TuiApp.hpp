@@ -699,6 +699,21 @@ private:
     }
 
     static std::string summarize_tool_result(const std::string& content) {
+        const auto stdout_marker = content.find("\nstdout:\n");
+        if (stdout_marker != std::string::npos) {
+            const auto first_line_end = content.find('\n');
+            auto status = content.substr(0, first_line_end);
+            const auto stdout_start = stdout_marker + std::string{"\nstdout:\n"}.size();
+            const auto stdout_end = content.find('\n', stdout_start);
+            auto stdout_line = stdout_end == std::string::npos
+                                   ? content.substr(stdout_start)
+                                   : content.substr(stdout_start, stdout_end - stdout_start);
+            stdout_line = trim_copy(stdout_line);
+            if (!stdout_line.empty()) {
+                return truncate_text(status + "; stdout: " + stdout_line, 160);
+            }
+        }
+
         auto summary = content;
         const auto newline = summary.find('\n');
         if (newline != std::string::npos) {

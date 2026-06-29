@@ -45,10 +45,21 @@ public:
             ToolCall done;
             done.id = "call_done";
             done.name = "Done";
-            done.arguments = {{"final_answer", "demo.py is ready"}};
+            done.arguments = {{"final_answer", "demo.py is ready and was executed"}};
+
+            ToolCall run_demo;
+            run_demo.id = "call_run_demo";
+            run_demo.name = "run_shell";
+            run_demo.arguments = {
+                {"command", "python demo.py"},
+                {"cwd", "."},
+                {"timeout_seconds", "10"},
+                {"max_output_bytes", "2000"},
+            };
 
             return std::make_unique<MockProvider>(std::vector<ProviderResponse>{
                 ProviderResponse::tool_calls_response({write_demo}),
+                ProviderResponse::tool_calls_response({run_demo}),
                 ProviderResponse::tool_calls_response({done}),
             });
         }
