@@ -42,6 +42,9 @@ public:
         log_initial_messages(messages);
 
         for (int step = 0; step < max_loops_; ++step) {
+            if (is_interrupted()) {
+                return interrupted_result(messages);
+            }
             const auto tools_schema_json = tools_.tools_schema_json(tool_exposure_policy_);
             log_model_started();
             auto response = provider_.chat_stream(
@@ -132,6 +135,9 @@ public:
                     }
                 }
 
+                if (is_interrupted()) {
+                    return interrupted_result(messages);
+                }
                 log_tool_started(call);
                 auto result = tool->run(arguments);
                 auto output = result.ok ? result.output : result.error;
@@ -156,6 +162,14 @@ public:
 
     const std::vector<Message>& last_messages() const { return last_messages_; }
 
+    void request_interrupt() {
+        interrupted_ = true;
+    }
+
+    bool interrupted() const {
+        return interrupted_;
+    }
+
     void set_tool_exposure_policy(ToolExposurePolicy policy) {
         tool_exposure_policy_ = std::move(policy);
     }
@@ -164,7 +178,15 @@ public:
         observer_ = std::move(observer);
     }
 
+    void set_interrupt_checker(std::function<bool()> interrupt_checker) {
+        interrupt_checker_ = std::move(interrupt_checker);
+    }
+
 private:
+    bool is_interrupted() const {
+        return interrupted_ || (interrupt_checker_ && interrupt_checker_());
+    }
+
     void record_event(SessionEvent event) {
         if (session_history_ != nullptr) {
             session_history_->add(event);
@@ -229,14 +251,24 @@ private:
         record_event(SessionEvent::error(content));
     }
 
+    AgentResult interrupted_result(const std::vector<Message>& messages) {
+        auto message = std::string{"Interrupted by user."};
+        record_event(SessionEvent::interrupted(message));
+        log_error(message);
+        last_messages_ = messages;
+        return AgentResult::failed(message);
+    }
+
     Provider& provider_;
     ToolRegistry& tools_;
     ApprovalService* approval_service_ = nullptr;
     SessionHistory* session_history_ = nullptr;
     ToolExposurePolicy tool_exposure_policy_;
     AgentRunObserver observer_;
+    std::function<bool()> interrupt_checker_;
     int max_loops_ = kDefaultMaxLoops;
     std::vector<Message> last_messages_;
+    bool interrupted_ = false;
 };
 
 }  // namespace agent_tui

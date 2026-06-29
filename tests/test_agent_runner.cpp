@@ -329,6 +329,44 @@ void test_agent_runner_emits_model_and_tool_lifecycle_events() {
     assert(std::find(events.begin(), events.end(), "tool_completed") != events.end());
 }
 
+void test_agent_runner_stops_when_interrupt_requested() {
+    ToolCall echo_call;
+    echo_call.id = "call_1";
+    echo_call.name = "echo";
+    echo_call.arguments = {{"text", "hello"}};
+
+    MockProvider provider({
+        ProviderResponse::tool_calls_response({echo_call}),
+        ProviderResponse::text_response("should not happen"),
+    });
+    ToolRegistry registry;
+    registry.register_tool(std::make_unique<EchoTool>());
+    AgentRunner runner(provider, registry, 4);
+    runner.request_interrupt();
+
+    auto result = runner.run({Message{Role::User, "run", {}}});
+
+    assert(!result.ok());
+    assert(result.error.find("Interrupted") != std::string::npos);
+}
+
+void test_agent_runner_stops_when_interrupt_checker_trips() {
+    MockProvider provider({
+        ProviderResponse::text_response("should not happen"),
+    });
+    ToolRegistry registry;
+    AgentRunner runner(provider, registry, 4);
+    runner.set_interrupt_checker([]() {
+        return true;
+    });
+
+    auto result = runner.run({Message{Role::User, "run", {}}});
+
+    assert(!result.ok());
+    assert(result.error.find("Interrupted") != std::string::npos);
+    assert(provider.call_count() == 0);
+}
+
 int main() {
     test_single_tool_call_then_done();
     test_tool_not_found_goes_back_to_model();
@@ -340,5 +378,7 @@ int main() {
     test_agent_runner_uses_tool_exposure_policy_for_provider_schema();
     test_agent_runner_blocks_tool_call_denied_by_exposure_policy();
     test_agent_runner_emits_model_and_tool_lifecycle_events();
+    test_agent_runner_stops_when_interrupt_requested();
+    test_agent_runner_stops_when_interrupt_checker_trips();
     return 0;
 }

@@ -716,7 +716,7 @@ git commit -m "Add visible agent lifecycle events"
 - Modify: `tests/test_agent_runner.cpp`
 - Modify: `tests/test_shell_tool.cpp`
 
-- [ ] **Step 1: Write failing AgentRunner interruption test**
+- [x] **Step 1: Write failing AgentRunner interruption test**
 
 Add to `tests/test_agent_runner.cpp`:
 
@@ -743,7 +743,7 @@ void test_agent_runner_stops_when_interrupt_requested() {
 }
 ```
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 Run:
 
@@ -754,7 +754,7 @@ cmake --build build --config Debug --target agent_tui_tests
 
 Expected: compile failure because `request_interrupt` does not exist.
 
-- [ ] **Step 3: Add interrupt flag to `AgentRunner`**
+- [x] **Step 3: Add interrupt flag to `AgentRunner`**
 
 In `AgentRunner`:
 
@@ -786,7 +786,7 @@ Add member:
 bool interrupted_ = false;
 ```
 
-- [ ] **Step 4: Add shell interruption cleanup test**
+- [x] **Step 4: Add shell interruption cleanup test**
 
 Add to `tests/test_shell_tool.cpp`:
 
@@ -807,7 +807,7 @@ void test_shell_tool_timeout_reports_cleanup() {
 }
 ```
 
-- [ ] **Step 5: Ensure `ShellTool` kills timed out process trees**
+- [x] **Step 5: Ensure `ShellTool` kills timed out process trees**
 
 On Windows, ensure process cleanup uses the existing process-management path. The shell result must include:
 
@@ -817,7 +817,7 @@ timed out
 
 and must not leave the child process running.
 
-- [ ] **Step 6: Wire `/interrupt` to the active runner**
+- [x] **Step 6: Wire `/interrupt` to the active runner**
 
 In `TuiApp`, store an active runner pointer or a shared cancellation flag:
 
@@ -835,7 +835,7 @@ add_system_message("interrupt requested");
 
 Pass a callback or shared flag into `AgentRunner` so model/tool loops can stop at checkpoints.
 
-- [ ] **Step 7: Run tests**
+- [x] **Step 7: Run tests**
 
 Run:
 

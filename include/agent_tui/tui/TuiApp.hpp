@@ -302,6 +302,10 @@ private:
                 render();
             };
             AgentRunner runner(*provider, registry, approval, history_, config_.max_loops);
+            runner.set_interrupt_checker([&]() {
+                sync_global_interrupt();
+                return interrupted_;
+            });
             bool streamed_assistant = false;
             transcript_.finish_assistant_stream();
             status_ = TuiRuntimeStatus::Thinking;
