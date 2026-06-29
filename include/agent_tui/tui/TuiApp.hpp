@@ -252,14 +252,24 @@ private:
             if (before_request_) {
                 before_request_(call, tool);
             }
-            output_ << "\nApprove " << tool.name() << ": " << summarize(call.arguments) << " ? [y/N] " << std::flush;
+            output_ << "\nApprove " << tool.name() << ": " << summarize(call.arguments)
+                    << " ? [y/N, n: feedback, edit: feedback] " << std::flush;
             std::string answer;
             if (!std::getline(input_, answer)) {
                 return ApprovalDecision::deny("approval input ended before a decision");
             }
-            answer = lower_ascii(trim_copy(answer));
-            if (answer == "y" || answer == "yes") {
+            const auto raw_answer = trim_copy(answer);
+            const auto normalized = lower_ascii(raw_answer);
+            if (normalized == "y" || normalized == "yes") {
                 return ApprovalDecision::approve();
+            }
+            if (normalized.rfind("n:", 0) == 0 || normalized.rfind("no:", 0) == 0) {
+                const auto colon = raw_answer.find(':');
+                return ApprovalDecision::deny(colon == std::string::npos ? std::string{} : trim_copy(raw_answer.substr(colon + 1)));
+            }
+            if (normalized.rfind("edit:", 0) == 0) {
+                const auto colon = raw_answer.find(':');
+                return ApprovalDecision::user_feedback(colon == std::string::npos ? std::string{} : trim_copy(raw_answer.substr(colon + 1)));
             }
             return ApprovalDecision::deny("user rejected in TUI");
         }

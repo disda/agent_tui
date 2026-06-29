@@ -1004,7 +1004,7 @@ git commit -m "Structure tool results for transcript display"
 - Modify: `tests/test_permission_gate.cpp`
 - Modify: `tests/test_tui_app.cpp`
 
-- [ ] **Step 1: Write failing approval feedback test**
+- [x] **Step 1: Write failing approval feedback test**
 
 Add to `tests/test_tui_app.cpp`:
 
@@ -1025,7 +1025,7 @@ void test_approval_prompt_accepts_feedback_denial() {
 }
 ```
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 Run:
 
@@ -1036,7 +1036,7 @@ cmake --build build --config Debug --target agent_tui_app_tests
 
 Expected: failure because the TUI approval prompt treats anything except y/yes as a generic denial.
 
-- [ ] **Step 3: Parse approval commands**
+- [x] **Step 3: Parse approval commands**
 
 In `TuiApprovalService::request`:
 
@@ -1056,7 +1056,7 @@ return ApprovalDecision::deny("user rejected in TUI");
 
 If `ApprovalDecision::feedback` does not exist, use the existing `ApprovalType::Feedback` constructor pattern from `ApprovalService.hpp`.
 
-- [ ] **Step 4: Show safer approval prompt**
+- [x] **Step 4: Show safer approval prompt**
 
 Change prompt text to include options:
 
@@ -1064,7 +1064,7 @@ Change prompt text to include options:
 Approve run_shell: command=... ? [y/N, n: feedback, edit: feedback]
 ```
 
-- [ ] **Step 5: Run approval and TUI tests**
+- [x] **Step 5: Run approval and TUI tests**
 
 Run:
 

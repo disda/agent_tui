@@ -265,6 +265,21 @@ void test_tui_runs_agent_tool_loop_for_code_demo() {
     std::filesystem::remove_all(root);
 }
 
+void test_approval_prompt_accepts_feedback_denial() {
+    const auto root = make_test_root();
+    std::istringstream input("/api provider mock-agent-demo\n" + zh_implement_demo() + "\nn: use a safer filename\n/exit\n");
+    std::ostringstream output;
+
+    TuiApp app(root);
+    app.set_streams(input, output);
+    const auto code = app.run();
+
+    assert(code == 0);
+    assert(output.str().find("approval denied > write_file") != std::string::npos);
+    assert(output.str().find("use a safer filename") != std::string::npos);
+    std::filesystem::remove_all(root);
+}
+
 void test_directory_question_is_not_handled_by_local_intent_router() {
     const auto root = make_test_root();
     std::istringstream input("/api provider mock\n" + zh_current_directory_question() + "\n/exit\n");
@@ -297,6 +312,7 @@ int main() {
     test_transcript_tracks_streaming_and_done_cells();
     test_system_prompt_includes_workspace_path();
     test_tui_runs_agent_tool_loop_for_code_demo();
+    test_approval_prompt_accepts_feedback_denial();
     test_directory_question_is_not_handled_by_local_intent_router();
     return 0;
 }
