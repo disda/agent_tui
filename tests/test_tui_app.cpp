@@ -54,6 +54,16 @@ std::string join_lines(const std::vector<std::string>& lines) {
     return out.str();
 }
 
+std::size_t count_occurrences(const std::string& text, const std::string& pattern) {
+    std::size_t count = 0;
+    std::size_t pos = 0;
+    while ((pos = text.find(pattern, pos)) != std::string::npos) {
+        ++count;
+        pos += pattern.size();
+    }
+    return count;
+}
+
 }  // namespace
 
 void test_model_command_sets_model() {
@@ -147,6 +157,7 @@ void test_run_accepts_scripted_input_and_uses_mock_provider() {
     assert(output.str().find("Agent TUI") != std::string::npos);
     assert(output.str().find("Provider") != std::string::npos);
     assert(output.str().find("assistant streaming > mock assistant: hello provider") != std::string::npos);
+    assert(count_occurrences(output.str(), "assistant streaming >") == 1);
     assert(output.str().find("assistant done > mock assistant: hello provider") != std::string::npos);
     std::filesystem::remove_all(root);
 }

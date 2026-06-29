@@ -310,7 +310,7 @@ git commit -m "Extract TUI transcript state"
 - Modify: `include/agent_tui/tui/TuiTranscript.hpp`
 - Modify: `tests/test_tui_app.cpp`
 
-- [ ] **Step 1: Write a failing test that detects repeated full render spam**
+- [x] **Step 1: Write a failing test that detects repeated full render spam**
 
 Add to `tests/test_tui_app.cpp`:
 
@@ -334,7 +334,7 @@ void test_streaming_render_does_not_duplicate_full_transcript_for_each_delta() {
 }
 ```
 
-- [ ] **Step 2: Run and verify the test fails**
+- [x] **Step 2: Run and verify the test fails**
 
 Run:
 
@@ -345,7 +345,7 @@ cmake --build build --config Debug --target agent_tui_app_tests
 
 Expected: fail if every delta causes a full transcript re-render that repeats `assistant streaming >`.
 
-- [ ] **Step 3: Add append-only render helpers**
+- [x] **Step 3: Add append-only render helpers**
 
 In `TuiTranscript`, add:
 
@@ -372,7 +372,7 @@ std::vector<std::string> render_cell_lines(std::size_t index, std::size_t width)
 }
 ```
 
-- [ ] **Step 4: Track last rendered cell count in `TuiApp`**
+- [x] **Step 4: Track last rendered cell count in `TuiApp`**
 
 Add member:
 
@@ -402,7 +402,7 @@ render_new_transcript_cells();
 
 If a terminal cannot update a previous active line without a framework, do not attempt cursor control yet. The acceptance target is no repeated full transcript spam.
 
-- [ ] **Step 5: Run TUI tests**
+- [x] **Step 5: Run TUI tests**
 
 Run:
 

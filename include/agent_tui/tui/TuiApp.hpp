@@ -309,6 +309,9 @@ private:
             render();
             runner.set_observer(AgentRunObserver{
                 [&](const SessionEvent& event) {
+                    if (event.type == SessionEventType::UserInput || event.type == SessionEventType::AssistantMessage) {
+                        return;
+                    }
                     if (event.type == SessionEventType::ToolCall) {
                         status_ = TuiRuntimeStatus::RunningTool;
                     }
@@ -319,7 +322,7 @@ private:
                     status_ = TuiRuntimeStatus::Thinking;
                     streamed_assistant = true;
                     append_assistant_delta(delta);
-                    render();
+                    render_assistant_delta(delta);
                 },
             });
             auto result = runner.run({
@@ -335,6 +338,7 @@ private:
             if (result.ok()) {
                 status_ = TuiRuntimeStatus::Done;
                 finish_streaming_assistant_cell();
+                render_finished_streaming_assistant();
                 return;
             }
             status_ = TuiRuntimeStatus::Error;
@@ -621,6 +625,27 @@ private:
         transcript_.finish_assistant_stream();
     }
 
+    void render_assistant_delta(const std::string& delta) {
+        if (!streaming_line_open_) {
+            *output_ << "\n  " << ansi("38;5;114") << "assistant streaming" << ansi("0") << " > ";
+            streaming_line_open_ = true;
+        }
+        *output_ << delta << std::flush;
+    }
+
+    void render_finished_streaming_assistant() {
+        if (streaming_line_open_) {
+            *output_ << "\n";
+            streaming_line_open_ = false;
+        }
+        if (transcript_.size() == 0) {
+            return;
+        }
+        for (const auto& line : transcript_.render_cell_lines(transcript_.size() - 1, 94)) {
+            *output_ << line << "\n";
+        }
+    }
+
     static constexpr std::size_t npos() {
         return static_cast<std::size_t>(-1);
     }
@@ -686,6 +711,7 @@ private:
     TuiConfig config_;
     SessionHistory history_;
     TuiTranscript transcript_;
+    bool streaming_line_open_ = false;
     TuiRuntimeStatus status_ = TuiRuntimeStatus::Idle;
     bool running_ = true;
     bool interrupted_ = false;
