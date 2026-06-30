@@ -1,6 +1,8 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <csignal>
 #include <cctype>
 #include <cstdint>
@@ -8,8 +10,10 @@
 #include <functional>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #ifdef _WIN32
@@ -209,6 +213,10 @@ public:
         color_enabled_ = false;
     }
 
+    void set_progress_heartbeat_interval_for_test(std::chrono::milliseconds interval) {
+        progress_heartbeat_interval_ = interval;
+    }
+
     static std::string coding_agent_system_prompt(const Workspace& workspace) {
         return "You are agent_tui, a local coding agent. "
                "Use tools to inspect, create, edit, and test code when useful. "
@@ -308,7 +316,9 @@ private:
             auto registry = make_tool_registry(workspace);
             TuiApprovalService approval(*input_, *output_);
             approval.before_request_ = [&](const ToolCall&, const Tool&) {
+                std::lock_guard<std::mutex> lock(ui_mutex_);
                 status_ = TuiRuntimeStatus::WaitingApproval;
+                current_step_ = "waiting for approval";
                 render();
             };
             AgentRunner runner(*provider, registry, approval, history_, config_.max_loops);
@@ -319,8 +329,11 @@ private:
             bool streamed_assistant = false;
             transcript_.finish_assistant_stream();
             status_ = TuiRuntimeStatus::Thinking;
+            current_step_ = "preparing model request";
             add_chat_line("agent", "thinking with " + config_.provider + " (" + std::to_string(config_.max_loops) + " max steps)");
             render();
+            std::atomic_bool progress_done{false};
+            auto progress_thread = start_progress_heartbeat(progress_done);
             runner.set_observer(AgentRunObserver{
                 [&](const SessionEvent& event) {
                     if (event.type == SessionEventType::UserInput ||
@@ -328,14 +341,29 @@ private:
                         event.type == SessionEventType::ModelCompleted) {
                         return;
                     }
+                    std::lock_guard<std::mutex> lock(ui_mutex_);
                     if (event.type == SessionEventType::ToolCall) {
                         status_ = TuiRuntimeStatus::RunningTool;
+                        current_step_ = "planning tool call: " + event.tool_name;
+                    } else if (event.type == SessionEventType::ToolStarted) {
+                        status_ = TuiRuntimeStatus::RunningTool;
+                        current_step_ = "running tool: " + event.tool_name;
+                    } else if (event.type == SessionEventType::ToolCompleted) {
+                        current_step_ = "completed tool: " + event.tool_name;
+                    } else if (event.type == SessionEventType::ModelStarted) {
+                        status_ = TuiRuntimeStatus::Thinking;
+                        current_step_ = "waiting for model response";
                     }
                     add_flow_line(event);
+                    if (progress_heartbeat_interval_.count() <= 0 && event.type == SessionEventType::ModelStarted) {
+                        transcript_.add_agent(current_step_ + " (0s elapsed)");
+                    }
                     render();
                 },
                 [&](const std::string& delta) {
+                    std::lock_guard<std::mutex> lock(ui_mutex_);
                     status_ = TuiRuntimeStatus::Thinking;
+                    current_step_ = "streaming assistant response";
                     streamed_assistant = true;
                     append_assistant_delta(delta);
                     render_assistant_delta(delta);
@@ -345,6 +373,10 @@ private:
                 Message{Role::System, coding_agent_system_prompt(workspace), {}},
                 Message{Role::User, line, {}},
             });
+            progress_done = true;
+            if (progress_thread.joinable()) {
+                progress_thread.join();
+            }
 
             if (result.ok() && !streamed_assistant) {
                 status_ = TuiRuntimeStatus::Done;
@@ -363,6 +395,42 @@ private:
             status_ = TuiRuntimeStatus::Error;
             add_error_message(error.what());
         }
+    }
+
+    std::thread start_progress_heartbeat(std::atomic_bool& done) {
+        const auto started = std::chrono::steady_clock::now();
+        return std::thread([&, started]() {
+            bool emitted_immediate_for_test = false;
+            while (!done.load()) {
+                const auto interval = progress_heartbeat_interval_;
+                if (interval.count() <= 0) {
+                    if (emitted_immediate_for_test) {
+                        return;
+                    }
+                    emitted_immediate_for_test = true;
+                } else {
+                    std::this_thread::sleep_for(interval);
+                }
+                if (done.load()) {
+                    return;
+                }
+                emit_progress_heartbeat(started);
+                if (interval.count() <= 0) {
+                    return;
+                }
+            }
+        });
+    }
+
+    void emit_progress_heartbeat(std::chrono::steady_clock::time_point started) {
+        std::lock_guard<std::mutex> lock(ui_mutex_);
+        if (status_ != TuiRuntimeStatus::Thinking && status_ != TuiRuntimeStatus::RunningTool) {
+            return;
+        }
+        const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - started).count();
+        const auto step = current_step_.empty() ? std::string{"working"} : current_step_;
+        transcript_.add_agent(step + " (" + std::to_string(elapsed) + "s elapsed)");
+        render();
     }
 
     static ToolRegistry make_tool_registry(const Workspace& workspace) {
@@ -398,6 +466,7 @@ private:
         *output_ << "\n" << ansi("38;5;245") << "Commands" << ansi("0")
                  << "  /help /status /clear /model /api /config /interrupt /skills /exit\n";
         *output_ << ansi("1;38;5;81") << "agent_tui>" << ansi("0") << " ";
+        *output_ << std::flush;
     }
 
     void render_prompt_only() {
@@ -757,6 +826,9 @@ private:
     SessionHistory history_;
     TuiTranscript transcript_;
     bool streaming_line_open_ = false;
+    std::mutex ui_mutex_;
+    std::chrono::milliseconds progress_heartbeat_interval_{std::chrono::seconds(5)};
+    std::string current_step_;
     TuiRuntimeStatus status_ = TuiRuntimeStatus::Idle;
     bool running_ = true;
     bool interrupted_ = false;

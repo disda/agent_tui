@@ -270,6 +270,21 @@ void test_tui_runs_agent_tool_loop_for_code_demo() {
     std::filesystem::remove_all(root);
 }
 
+void test_tui_emits_progress_heartbeat_during_agent_run() {
+    const auto root = make_test_root();
+    std::istringstream input("/api provider mock-agent-demo\n" + zh_implement_demo() + "\ny\ny\n/exit\n");
+    std::ostringstream output;
+
+    TuiApp app(root);
+    app.set_streams(input, output);
+    app.set_progress_heartbeat_interval_for_test(std::chrono::milliseconds(0));
+    const auto code = app.run();
+
+    assert(code == 0);
+    assert(output.str().find("agent > waiting for model response") != std::string::npos);
+    std::filesystem::remove_all(root);
+}
+
 void test_approval_prompt_accepts_feedback_denial() {
     const auto root = make_test_root();
     std::istringstream input("/api provider mock-agent-demo\n" + zh_implement_demo() + "\nn: use a safer filename\n/exit\n");
@@ -317,6 +332,7 @@ int main() {
     test_transcript_tracks_streaming_and_done_cells();
     test_system_prompt_includes_workspace_path();
     test_tui_runs_agent_tool_loop_for_code_demo();
+    test_tui_emits_progress_heartbeat_during_agent_run();
     test_approval_prompt_accepts_feedback_denial();
     test_directory_question_is_not_handled_by_local_intent_router();
     return 0;
