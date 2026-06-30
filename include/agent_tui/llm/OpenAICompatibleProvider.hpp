@@ -9,13 +9,13 @@
 #include <functional>
 #include <fstream>
 #include <map>
-#include <regex>
 #include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include <curl/curl.h>
+#include <nlohmann/json.hpp>
 
 #include "agent_tui/config/Config.hpp"
 #include "agent_tui/llm/Provider.hpp"
@@ -24,73 +24,7 @@ namespace agent_tui {
 
 namespace openai_compatible_detail {
 
-inline std::string json_escape_string(const std::string& value) {
-    std::ostringstream out;
-    for (const char ch : value) {
-        switch (ch) {
-            case '\\': out << "\\\\"; break;
-            case '"': out << "\\\""; break;
-            case '\n': out << "\\n"; break;
-            case '\r': out << "\\r"; break;
-            case '\t': out << "\\t"; break;
-            default: out << ch; break;
-        }
-    }
-    return out.str();
-}
-
-inline int json_hex_value(char ch) {
-    if (ch >= '0' && ch <= '9') {
-        return ch - '0';
-    }
-    if (ch >= 'a' && ch <= 'f') {
-        return 10 + (ch - 'a');
-    }
-    if (ch >= 'A' && ch <= 'F') {
-        return 10 + (ch - 'A');
-    }
-    return -1;
-}
-
-inline bool parse_json_hex4(const std::string& value, std::size_t offset, unsigned int& codepoint) {
-    if (offset + 4 > value.size()) {
-        return false;
-    }
-    unsigned int parsed = 0;
-    for (std::size_t i = 0; i < 4; ++i) {
-        const int hex = json_hex_value(value[offset + i]);
-        if (hex < 0) {
-            return false;
-        }
-        parsed = (parsed << 4) | static_cast<unsigned int>(hex);
-    }
-    codepoint = parsed;
-    return true;
-}
-
-inline void append_utf8(std::ostringstream& out, unsigned int codepoint) {
-    if (codepoint <= 0x7F) {
-        out << static_cast<char>(codepoint);
-        return;
-    }
-    if (codepoint <= 0x7FF) {
-        out << static_cast<char>(0xC0 | ((codepoint >> 6) & 0x1F));
-        out << static_cast<char>(0x80 | (codepoint & 0x3F));
-        return;
-    }
-    if (codepoint <= 0xFFFF) {
-        out << static_cast<char>(0xE0 | ((codepoint >> 12) & 0x0F));
-        out << static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
-        out << static_cast<char>(0x80 | (codepoint & 0x3F));
-        return;
-    }
-    if (codepoint <= 0x10FFFF) {
-        out << static_cast<char>(0xF0 | ((codepoint >> 18) & 0x07));
-        out << static_cast<char>(0x80 | ((codepoint >> 12) & 0x3F));
-        out << static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
-        out << static_cast<char>(0x80 | (codepoint & 0x3F));
-    }
-}
+using Json = nlohmann::json;
 
 inline std::string role_to_string(Role role) {
     switch (role) {
@@ -102,245 +36,111 @@ inline std::string role_to_string(Role role) {
     return "user";
 }
 
-inline std::string json_unescape_string(const std::string& value) {
-    std::ostringstream out;
-    for (std::size_t i = 0; i < value.size(); ++i) {
-        if (value[i] != '\\' || i + 1 >= value.size()) {
-            out << value[i];
-            continue;
-        }
-        const char next = value[++i];
-        switch (next) {
-            case 'n': out << '\n'; break;
-            case 'r': out << '\r'; break;
-            case 't': out << '\t'; break;
-            case '"': out << '"'; break;
-            case '\\': out << '\\'; break;
-            case 'u': {
-                unsigned int codepoint = 0;
-                if (!parse_json_hex4(value, i + 1, codepoint)) {
-                    out << 'u';
-                    break;
-                }
-                i += 4;
-                if (codepoint >= 0xD800 && codepoint <= 0xDBFF && i + 6 < value.size() &&
-                    value[i + 1] == '\\' && value[i + 2] == 'u') {
-                    unsigned int low = 0;
-                    if (parse_json_hex4(value, i + 3, low) && low >= 0xDC00 && low <= 0xDFFF) {
-                        codepoint = 0x10000 + (((codepoint - 0xD800) << 10) | (low - 0xDC00));
-                        i += 6;
-                    }
-                }
-                append_utf8(out, codepoint);
-                break;
-            }
-            default: out << next; break;
-        }
+inline std::string json_value_to_argument_string(const Json& value) {
+    if (value.is_string()) {
+        return value.get<std::string>();
     }
-    return out.str();
+    if (value.is_null()) {
+        return {};
+    }
+    return value.dump();
 }
 
-inline std::string extract_json_string_field(const std::string& body, const std::string& field) {
-    const auto key = "\"" + field + "\"";
-    auto pos = body.find(key);
-    if (pos == std::string::npos) {
-        return {};
+inline JsonLike json_object_to_arguments(const Json& object) {
+    JsonLike result;
+    if (!object.is_object()) {
+        return result;
     }
-    pos = body.find(':', pos + key.size());
-    if (pos == std::string::npos) {
-        return {};
+    for (auto it = object.begin(); it != object.end(); ++it) {
+        result[it.key()] = json_value_to_argument_string(it.value());
     }
-    pos = body.find('"', pos + 1);
-    if (pos == std::string::npos) {
-        return {};
-    }
+    return result;
+}
 
-    std::string value;
+inline std::string escape_control_chars_in_json_strings(const std::string& value) {
+    std::string escaped_value;
+    escaped_value.reserve(value.size());
+    bool in_string = false;
     bool escaped = false;
-    for (std::size_t i = pos + 1; i < body.size(); ++i) {
-        const char ch = body[i];
+    for (const char ch : value) {
         if (escaped) {
-            value.push_back('\\');
-            value.push_back(ch);
+            escaped_value.push_back(ch);
             escaped = false;
             continue;
         }
         if (ch == '\\') {
+            escaped_value.push_back(ch);
             escaped = true;
             continue;
         }
         if (ch == '"') {
-            return json_unescape_string(value);
+            in_string = !in_string;
+            escaped_value.push_back(ch);
+            continue;
         }
-        value.push_back(ch);
+        if (in_string && ch == '\n') {
+            escaped_value += "\\n";
+            continue;
+        }
+        if (in_string && ch == '\r') {
+            escaped_value += "\\r";
+            continue;
+        }
+        if (in_string && ch == '\t') {
+            escaped_value += "\\t";
+            continue;
+        }
+        escaped_value.push_back(ch);
     }
-    return {};
+    return escaped_value;
 }
 
-inline JsonLike parse_flat_json_string_object(const std::string& body) {
-    JsonLike result;
-    std::size_t pos = 0;
-    auto skip_ws = [&](std::size_t& index) {
-        while (index < body.size() && std::isspace(static_cast<unsigned char>(body[index])) != 0) {
-            ++index;
-        }
-    };
-    auto parse_json_string = [&](std::size_t& index) {
-        std::string value;
-        bool escaped = false;
-        if (index >= body.size() || body[index] != '"') {
-            return value;
-        }
-        for (++index; index < body.size(); ++index) {
-            const char ch = body[index];
-            if (escaped) {
-                value.push_back('\\');
-                value.push_back(ch);
-                escaped = false;
-                continue;
-            }
-            if (ch == '\\') {
-                escaped = true;
-                continue;
-            }
-            if (ch == '"') {
-                ++index;
-                return json_unescape_string(value);
-            }
-            value.push_back(ch);
-        }
-        return json_unescape_string(value);
-    };
-    auto parse_compound = [&](std::size_t& index) {
-        const char open = body[index];
-        const char close = open == '{' ? '}' : ']';
-        const auto start = index;
-        int depth = 0;
-        bool in_string = false;
-        bool escaped = false;
-        for (; index < body.size(); ++index) {
-            const char ch = body[index];
-            if (in_string) {
-                if (escaped) {
-                    escaped = false;
-                } else if (ch == '\\') {
-                    escaped = true;
-                } else if (ch == '"') {
-                    in_string = false;
-                }
-                continue;
-            }
-            if (ch == '"') {
-                in_string = true;
-                continue;
-            }
-            if (ch == open) {
-                ++depth;
-            } else if (ch == close) {
-                --depth;
-                if (depth == 0) {
-                    ++index;
-                    return body.substr(start, index - start);
-                }
-            }
-        }
-        return body.substr(start);
-    };
+inline JsonLike parse_arguments_json(const Json& arguments) {
+    if (arguments.is_object()) {
+        return json_object_to_arguments(arguments);
+    }
+    if (!arguments.is_string()) {
+        return {};
+    }
+    const auto parsed = Json::parse(arguments.get<std::string>(), nullptr, false);
+    if (parsed.is_object()) {
+        return json_object_to_arguments(parsed);
+    }
+    const auto compatible = Json::parse(escape_control_chars_in_json_strings(arguments.get<std::string>()), nullptr, false);
+    if (!compatible.is_object()) {
+        return {};
+    }
+    return json_object_to_arguments(compatible);
+}
 
-    while (pos < body.size()) {
-        skip_ws(pos);
-        if (pos < body.size() && (body[pos] == '{' || body[pos] == ',')) {
-            ++pos;
-            continue;
-        }
-        pos = body.find('"', pos);
-        if (pos == std::string::npos) {
-            break;
-        }
-        auto key = parse_json_string(pos);
-        skip_ws(pos);
-        if (pos >= body.size() || body[pos] != ':') {
-            break;
-        }
-        ++pos;
-        skip_ws(pos);
-        if (pos == std::string::npos) {
-            break;
-        }
-
-        if (pos < body.size() && body[pos] == '"') {
-            result[key] = parse_json_string(pos);
-            continue;
-        }
-        if (pos < body.size() && (body[pos] == '{' || body[pos] == '[')) {
-            result[key] = parse_compound(pos);
-            continue;
-        }
-
-        const auto value_start = pos;
-        while (pos < body.size() && body[pos] != ',' && body[pos] != '}') {
-            ++pos;
-        }
-        auto value = body.substr(value_start, pos - value_start);
-        value.erase(value.begin(), std::find_if(value.begin(), value.end(), [](unsigned char ch) {
-            return std::isspace(ch) == 0;
-        }));
-        value.erase(std::find_if(value.rbegin(), value.rend(), [](unsigned char ch) {
-            return std::isspace(ch) == 0;
-        }).base(), value.end());
+inline Json json_from_arguments(const JsonLike& arguments) {
+    Json result = Json::object();
+    for (const auto& [key, value] : arguments) {
         result[key] = value;
     }
     return result;
 }
 
-inline std::string flat_json_string_object(const JsonLike& object) {
-    std::ostringstream out;
-    out << "{";
-    bool first = true;
-    for (const auto& item : object) {
-        if (!first) {
-            out << ",";
-        }
-        first = false;
-        out << "\"" << json_escape_string(item.first) << "\":\"" << json_escape_string(item.second) << "\"";
-    }
-    out << "}";
-    return out.str();
-}
-
-inline std::string tool_calls_json(const std::vector<ToolCall>& calls) {
-    std::ostringstream out;
-    out << "[";
-    bool first = true;
-    for (const auto& call : calls) {
-        if (!first) {
-            out << ",";
-        }
-        first = false;
-        out << "{";
-        out << "\"id\":\"" << json_escape_string(call.id) << "\",";
-        out << "\"type\":\"function\",";
-        out << "\"function\":{";
-        out << "\"name\":\"" << json_escape_string(call.name) << "\",";
-        out << "\"arguments\":\"" << json_escape_string(flat_json_string_object(call.arguments)) << "\"";
-        out << "}";
-        out << "}";
-    }
-    out << "]";
-    return out.str();
-}
-
-inline std::vector<ToolCall> extract_tool_calls(const std::string& body) {
+inline std::vector<ToolCall> parse_tool_calls(const Json& tool_calls_json) {
     std::vector<ToolCall> calls;
-    const std::regex pattern(
-        R"REGEX("id"\s*:\s*"([^"]+)"[\s\S]*?"function"\s*:\s*\{[\s\S]*?"name"\s*:\s*"([^"]+)"[\s\S]*?"arguments"\s*:\s*"((?:\\.|[^"\\])*)")REGEX");
-    auto begin = std::sregex_iterator(body.begin(), body.end(), pattern);
-    const auto end = std::sregex_iterator();
-    for (auto it = begin; it != end; ++it) {
+    if (!tool_calls_json.is_array()) {
+        return calls;
+    }
+    for (const auto& item : tool_calls_json) {
+        const auto function = item.value("function", Json::object());
+        if (!function.is_object()) {
+            continue;
+        }
         ToolCall call;
-        call.id = (*it)[1].str();
-        call.name = (*it)[2].str();
-        call.arguments = parse_flat_json_string_object(json_unescape_string((*it)[3].str()));
+        call.id = item.value("id", "");
+        call.name = function.value("name", "");
+        if (call.name.empty()) {
+            continue;
+        }
+        const auto arguments = function.find("arguments");
+        if (arguments != function.end()) {
+            call.arguments = parse_arguments_json(*arguments);
+        }
         calls.push_back(std::move(call));
     }
     return calls;
@@ -416,39 +216,45 @@ public:
                                           const std::string& tools_schema_json = {},
                                           bool include_tools = true,
                                           bool stream = false) {
-        std::ostringstream out;
-        out << "{";
-        out << "\"model\":\"" << openai_compatible_detail::json_escape_string(config.model) << "\",";
-        out << "\"messages\":[";
-        bool first = true;
+        using openai_compatible_detail::Json;
+        Json body;
+        body["model"] = config.model;
+        body["messages"] = Json::array();
         for (const auto& message : messages) {
-            if (!first) {
-                out << ",";
-            }
-            first = false;
-            out << "{";
+            Json item;
             if (message.role == Role::Tool) {
-                out << "\"role\":\"tool\",";
-                out << "\"tool_call_id\":\"" << openai_compatible_detail::json_escape_string(message.tool_call_id) << "\",";
-                out << "\"content\":\"" << openai_compatible_detail::json_escape_string(message.content) << "\"";
+                item["role"] = "tool";
+                item["tool_call_id"] = message.tool_call_id;
+                item["content"] = message.content;
             } else if (message.role == Role::Assistant && !message.tool_calls.empty()) {
-                out << "\"role\":\"assistant\",";
-                out << "\"content\":\"" << openai_compatible_detail::json_escape_string(message.content) << "\",";
-                out << "\"tool_calls\":" << openai_compatible_detail::tool_calls_json(message.tool_calls);
+                item["role"] = "assistant";
+                item["content"] = message.content;
+                item["tool_calls"] = Json::array();
+                for (const auto& call : message.tool_calls) {
+                    item["tool_calls"].push_back({
+                        {"id", call.id},
+                        {"type", "function"},
+                        {"function", {
+                            {"name", call.name},
+                            {"arguments", openai_compatible_detail::json_from_arguments(call.arguments).dump()},
+                        }},
+                    });
+                }
             } else {
-                out << "\"role\":\"" << openai_compatible_detail::role_to_string(message.role) << "\",";
-                out << "\"content\":\"" << openai_compatible_detail::json_escape_string(message.content) << "\"";
+                item["role"] = openai_compatible_detail::role_to_string(message.role);
+                item["content"] = message.content;
             }
-            out << "}";
+            body["messages"].push_back(std::move(item));
         }
-        out << "],";
         if (include_tools && !tools_schema_json.empty()) {
-            out << "\"tools\":" << tools_schema_json << ",";
-            out << "\"tool_choice\":\"auto\",";
+            auto tools = Json::parse(tools_schema_json, nullptr, false);
+            if (!tools.is_discarded()) {
+                body["tools"] = std::move(tools);
+                body["tool_choice"] = "auto";
+            }
         }
-        out << "\"stream\":" << (stream ? "true" : "false");
-        out << "}";
-        return out.str();
+        body["stream"] = stream;
+        return body.dump();
     }
 
     static std::string build_request_body(const Config& config, const std::vector<Message>& messages, bool include_tools, bool stream = false) {
@@ -456,20 +262,34 @@ public:
     }
 
     static ProviderResponse parse_response_body(const std::string& body) {
-        const auto tool_calls = openai_compatible_detail::extract_tool_calls(body);
-        if (!tool_calls.empty()) {
-            return ProviderResponse::tool_calls_response(tool_calls);
+        using openai_compatible_detail::Json;
+        const auto parsed = Json::parse(body, nullptr, false);
+        if (parsed.is_discarded()) {
+            return ProviderResponse::error_response("failed to parse openai-compatible response");
         }
 
-        const auto error_message = openai_compatible_detail::extract_json_string_field(body, "message");
-        if (body.find("\"error\"") != std::string::npos && !error_message.empty()) {
-            return ProviderResponse::error_response(error_message);
+        if (parsed.contains("error") && parsed["error"].is_object()) {
+            const auto message = parsed["error"].value("message", "");
+            if (!message.empty()) {
+                return ProviderResponse::error_response(message);
+            }
         }
 
-        const auto content = openai_compatible_detail::extract_json_string_field(body, "content");
-        if (!content.empty()) {
-            return ProviderResponse::text_response(content);
+        const auto choices = parsed.find("choices");
+        if (choices != parsed.end() && choices->is_array() && !choices->empty()) {
+            const auto message = (*choices)[0].value("message", Json::object());
+            if (message.is_object()) {
+                const auto tool_calls = openai_compatible_detail::parse_tool_calls(message.value("tool_calls", Json::array()));
+                if (!tool_calls.empty()) {
+                    return ProviderResponse::tool_calls_response(tool_calls);
+                }
+                const auto content = message.find("content");
+                if (content != message.end() && content->is_string()) {
+                    return ProviderResponse::text_response(content->get<std::string>());
+                }
+            }
         }
+
         return ProviderResponse::error_response("failed to parse openai-compatible response");
     }
 
@@ -674,50 +494,53 @@ private:
     static void consume_stream_chunk(const std::string& chunk,
                                      StreamAccumulator& accumulator,
                                      const std::function<void(const std::string&)>& on_delta) {
-        const auto delta = openai_compatible_detail::extract_json_string_field(chunk, "content");
-        if (!delta.empty()) {
-            accumulator.text += delta;
-            on_delta(delta);
+        using openai_compatible_detail::Json;
+        const auto parsed = Json::parse(chunk, nullptr, false);
+        if (parsed.is_discarded()) {
+            return;
         }
-
-        std::size_t pos = 0;
-        while ((pos = chunk.find("\"index\"", pos)) != std::string::npos) {
-            auto colon = chunk.find(':', pos + 7);
-            if (colon == std::string::npos) {
-                break;
-            }
-            ++colon;
-            while (colon < chunk.size() && std::isspace(static_cast<unsigned char>(chunk[colon])) != 0) {
-                ++colon;
-            }
-            auto end = colon;
-            while (end < chunk.size() && std::isdigit(static_cast<unsigned char>(chunk[end])) != 0) {
-                ++end;
-            }
-            if (end == colon) {
-                pos = end;
+        const auto choices = parsed.find("choices");
+        if (choices == parsed.end() || !choices->is_array()) {
+            return;
+        }
+        for (const auto& choice : *choices) {
+            const auto delta = choice.value("delta", Json::object());
+            if (!delta.is_object()) {
                 continue;
             }
-
-            const int index = std::stoi(chunk.substr(colon, end - colon));
-            const auto next = chunk.find("\"index\"", end);
-            const auto segment = chunk.substr(pos, next == std::string::npos ? std::string::npos : next - pos);
-
-            auto& part = accumulator.tool_calls[index];
-            const auto id = openai_compatible_detail::extract_json_string_field(segment, "id");
-            const auto name = openai_compatible_detail::extract_json_string_field(segment, "name");
-            const auto arguments = openai_compatible_detail::extract_json_string_field(segment, "arguments");
-            if (!id.empty()) {
-                part.id = id;
+            const auto content = delta.find("content");
+            if (content != delta.end() && content->is_string()) {
+                const auto text = content->get<std::string>();
+                accumulator.text += text;
+                on_delta(text);
             }
-            if (!name.empty()) {
-                part.name = name;
+            const auto tool_calls = delta.find("tool_calls");
+            if (tool_calls == delta.end() || !tool_calls->is_array()) {
+                continue;
             }
-            if (!arguments.empty()) {
-                part.arguments += arguments;
+            for (const auto& item : *tool_calls) {
+                const int index = item.value("index", 0);
+                auto& part = accumulator.tool_calls[index];
+                if (item.contains("id") && item["id"].is_string()) {
+                    part.id = item["id"].get<std::string>();
+                }
+                const auto function = item.value("function", Json::object());
+                if (!function.is_object()) {
+                    continue;
+                }
+                if (function.contains("name") && function["name"].is_string()) {
+                    part.name = function["name"].get<std::string>();
+                }
+                const auto arguments = function.find("arguments");
+                if (arguments == function.end()) {
+                    continue;
+                }
+                if (arguments->is_string()) {
+                    part.arguments += arguments->get<std::string>();
+                } else if (arguments->is_object()) {
+                    part.arguments = arguments->dump();
+                }
             }
-
-            pos = next == std::string::npos ? chunk.size() : next;
         }
     }
 
@@ -731,7 +554,8 @@ private:
                 ToolCall call;
                 call.id = part.id.empty() ? "stream_tool_call_" + std::to_string(index) : part.id;
                 call.name = part.name;
-                call.arguments = openai_compatible_detail::parse_flat_json_string_object(part.arguments);
+                const auto arguments = openai_compatible_detail::Json::parse(part.arguments, nullptr, false);
+                call.arguments = openai_compatible_detail::parse_arguments_json(arguments);
                 calls.push_back(std::move(call));
             }
             if (!calls.empty()) {

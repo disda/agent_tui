@@ -6,6 +6,8 @@ endif()
 
 project(agent_tui VERSION 0.1.0 LANGUAGES CXX)
 
+include(FetchContent)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -19,9 +21,16 @@ endif()
 
 find_package(CURL REQUIRED)
 
+FetchContent_Declare(
+  nlohmann_json
+  URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+)
+
+FetchContent_MakeAvailable(nlohmann_json)
+
 add_library(agent_tui_core INTERFACE)
 target_include_directories(agent_tui_core INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(agent_tui_core INTERFACE CURL::libcurl)
+target_link_libraries(agent_tui_core INTERFACE CURL::libcurl nlohmann_json::nlohmann_json)
 target_compile_definitions(agent_tui_core INTERFACE AGENT_TUI_USE_LIBCURL)
 if(WIN32)
   target_compile_definitions(agent_tui_core INTERFACE NOMINMAX WIN32_LEAN_AND_MEAN)

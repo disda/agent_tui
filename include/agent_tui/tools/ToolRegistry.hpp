@@ -3,10 +3,11 @@
 #include <algorithm>
 #include <initializer_list>
 #include <memory>
-#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 #include "agent_tui/tools/Tool.hpp"
 
@@ -72,44 +73,29 @@ public:
     }
 
     std::string tools_schema_json(const ToolExposurePolicy& policy) const {
-        std::ostringstream out;
-        out << "[";
-        bool first = true;
+        nlohmann::json schema = nlohmann::json::array();
         for (const auto& name : names(policy)) {
             const auto* tool = find(name);
             if (tool == nullptr) {
                 continue;
             }
-            if (!first) {
-                out << ",";
+            auto parameters = nlohmann::json::parse(tool->parameters_schema_json(), nullptr, false);
+            if (parameters.is_discarded()) {
+                parameters = nlohmann::json::object();
             }
-            first = false;
-            out << "{\"type\":\"function\",\"function\":{";
-            out << "\"name\":\"" << json_escape(tool->name()) << "\",";
-            out << "\"description\":\"" << json_escape(tool->description()) << "\",";
-            out << "\"parameters\":" << tool->parameters_schema_json();
-            out << "}}";
+            schema.push_back({
+                {"type", "function"},
+                {"function", {
+                    {"name", tool->name()},
+                    {"description", tool->description()},
+                    {"parameters", std::move(parameters)},
+                }},
+            });
         }
-        out << "]";
-        return out.str();
+        return schema.dump();
     }
 
 private:
-    static std::string json_escape(const std::string& value) {
-        std::ostringstream out;
-        for (const char ch : value) {
-            switch (ch) {
-                case '\\': out << "\\\\"; break;
-                case '"': out << "\\\""; break;
-                case '\n': out << "\\n"; break;
-                case '\r': out << "\\r"; break;
-                case '\t': out << "\\t"; break;
-                default: out << ch; break;
-            }
-        }
-        return out.str();
-    }
-
     std::unordered_map<std::string, std::unique_ptr<Tool>> tools_;
 };
 

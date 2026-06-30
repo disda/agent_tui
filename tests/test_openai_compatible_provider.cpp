@@ -8,13 +8,26 @@
 
 #include <cassert>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
+#include <iostream>
 #include <memory>
 #include <string>
 
 using namespace agent_tui;
 
 namespace {
+
+void test_assert(bool condition, const char* expression, const char* file, int line) {
+    if (condition) {
+        return;
+    }
+    std::cerr << file << ":" << line << ": assertion failed: " << expression << '\n';
+    std::exit(1);
+}
+
+#undef assert
+#define assert(expression) test_assert((expression), #expression, __FILE__, __LINE__)
 
 class CustomSchemaTool final : public Tool {
 public:
@@ -177,6 +190,39 @@ void test_parse_tool_call_arguments_decodes_unicode_escapes() {
     assert(response.tool_calls[0].arguments.at("content") == "<!DOCTYPE html>\n<html></html>");
 }
 
+void test_parse_tool_call_arguments_accepts_json_object() {
+    const std::string body = R"({
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call_read",
+                            "type": "function",
+                            "function": {
+                                "name": "read_file",
+                                "arguments": {
+                                    "path": "TODO.md",
+                                    "limit": 200,
+                                    "literal": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        ]
+    })";
+
+    const auto response = OpenAICompatibleProvider::parse_response_body(body);
+    assert(response.type == ProviderResponseType::ToolCalls);
+    assert(response.tool_calls.size() == 1);
+    assert(response.tool_calls[0].arguments.at("path") == "TODO.md");
+    assert(response.tool_calls[0].arguments.at("limit") == "200");
+    assert(response.tool_calls[0].arguments.at("literal") == "true");
+}
+
 void test_request_body_includes_tool_definitions_and_tool_results() {
     const auto root = make_test_root();
     Workspace workspace(root);
@@ -302,6 +348,7 @@ int main() {
     test_parse_tool_call_response();
     test_parse_tool_call_arguments_with_non_string_values();
     test_parse_tool_call_arguments_decodes_unicode_escapes();
+    test_parse_tool_call_arguments_accepts_json_object();
     test_request_body_includes_tool_definitions_and_tool_results();
     test_request_body_uses_tool_registry_schema();
     test_streaming_request_body_can_omit_tools();
