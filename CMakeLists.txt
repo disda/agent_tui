@@ -11,6 +11,7 @@ include(FetchContent)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
 if(MSVC)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
@@ -32,6 +33,7 @@ add_library(agent_tui_core INTERFACE)
 target_include_directories(agent_tui_core INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(agent_tui_core INTERFACE CURL::libcurl nlohmann_json::nlohmann_json)
 target_compile_definitions(agent_tui_core INTERFACE AGENT_TUI_USE_LIBCURL)
+
 if(WIN32)
   target_compile_definitions(agent_tui_core INTERFACE NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
@@ -39,44 +41,17 @@ endif()
 add_executable(agent_tui src/main.cpp)
 target_link_libraries(agent_tui PRIVATE agent_tui_core)
 
+# tests
 add_executable(agent_tui_tests tests/test_agent_runner.cpp)
 target_link_libraries(agent_tui_tests PRIVATE agent_tui_core)
 
-add_executable(agent_tui_file_tools_tests tests/test_file_tools.cpp)
-target_link_libraries(agent_tui_file_tools_tests PRIVATE agent_tui_core)
+add_executable(agent_tui_trace_tests tests/test_trace_adapter.cpp)
+target_link_libraries(agent_tui_trace_tests PRIVATE agent_tui_core)
 
-add_executable(agent_tui_permission_gate_tests tests/test_permission_gate.cpp)
-target_link_libraries(agent_tui_permission_gate_tests PRIVATE agent_tui_core)
-
-add_executable(agent_tui_shell_tool_tests tests/test_shell_tool.cpp)
-target_link_libraries(agent_tui_shell_tool_tests PRIVATE agent_tui_core)
-
-add_executable(agent_tui_write_edit_tools_tests tests/test_write_edit_tools.cpp)
-target_link_libraries(agent_tui_write_edit_tools_tests PRIVATE agent_tui_core)
-
-add_executable(agent_tui_session_history_tests tests/test_session_history.cpp)
-target_link_libraries(agent_tui_session_history_tests PRIVATE agent_tui_core)
-
-add_executable(agent_tui_app_tests tests/test_tui_app.cpp)
-target_link_libraries(agent_tui_app_tests PRIVATE agent_tui_core)
-
-add_executable(agent_tui_config_loader_tests tests/test_config_loader.cpp)
-target_link_libraries(agent_tui_config_loader_tests PRIVATE agent_tui_core)
-
-add_executable(agent_tui_openai_compatible_provider_tests tests/test_openai_compatible_provider.cpp)
-target_link_libraries(agent_tui_openai_compatible_provider_tests PRIVATE agent_tui_core)
-
-add_executable(agent_tui_file_manager_tools_tests tests/test_file_manager_tools.cpp)
-target_link_libraries(agent_tui_file_manager_tools_tests PRIVATE agent_tui_core)
+add_executable(agent_tui_context_tests tests/test_context_manager.cpp)
+target_link_libraries(agent_tui_context_tests PRIVATE agent_tui_core)
 
 enable_testing()
 add_test(NAME agent_tui_tests COMMAND agent_tui_tests)
-add_test(NAME agent_tui_file_tools_tests COMMAND agent_tui_file_tools_tests)
-add_test(NAME agent_tui_permission_gate_tests COMMAND agent_tui_permission_gate_tests)
-add_test(NAME agent_tui_shell_tool_tests COMMAND agent_tui_shell_tool_tests)
-add_test(NAME agent_tui_write_edit_tools_tests COMMAND agent_tui_write_edit_tools_tests)
-add_test(NAME agent_tui_session_history_tests COMMAND agent_tui_session_history_tests)
-add_test(NAME agent_tui_app_tests COMMAND agent_tui_app_tests)
-add_test(NAME agent_tui_config_loader_tests COMMAND agent_tui_config_loader_tests)
-add_test(NAME agent_tui_openai_compatible_provider_tests COMMAND agent_tui_openai_compatible_provider_tests)
-add_test(NAME agent_tui_file_manager_tools_tests COMMAND agent_tui_file_manager_tools_tests)
+add_test(NAME agent_tui_trace_tests COMMAND agent_tui_trace_tests)
+add_test(NAME agent_tui_context_tests COMMAND agent_tui_context_tests)
