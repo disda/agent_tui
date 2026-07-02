@@ -328,6 +328,13 @@ private:
         std::string raw;
         std::string pending_line;
         const std::function<void(const std::string&)>* on_delta = nullptr;
+        const OpenAICompatibleProvider* provider = nullptr;
+        bool interrupted = false;
+    };
+
+    struct CurlRequestContext {
+        const OpenAICompatibleProvider* provider = nullptr;
+        bool interrupted = false;
     };
 
     static std::string curl_error_message(CURLcode code, long status_code, const std::string& response_body) {
@@ -375,6 +382,24 @@ private:
         return curl_slist_append(headers, header.c_str());
     }
 
+    static int curl_progress_callback(void* clientp, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
+        auto* context = static_cast<CurlRequestContext*>(clientp);
+        if (context != nullptr && context->provider != nullptr && context->provider->interrupted()) {
+            context->interrupted = true;
+            return 1;
+        }
+        return 0;
+    }
+
+    static int curl_stream_progress_callback(void* clientp, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
+        auto* context = static_cast<CurlStreamContext*>(clientp);
+        if (context != nullptr && context->provider != nullptr && context->provider->interrupted()) {
+            context->interrupted = true;
+            return 1;
+        }
+        return 0;
+    }
+
     ProviderResponse chat_with_libcurl(const std::string& api_base,
                                        const std::string& api_key,
                                        const std::string& request_body) const {
@@ -385,6 +410,8 @@ private:
         }
 
         std::string response_body;
+        CurlRequestContext request_context;
+        request_context.provider = this;
         const auto url = api_base + "/chat/completions";
         curl_easy_setopt(curl.get(), CURLOPT_URL, url.c_str());
         curl_easy_setopt(curl.get(), CURLOPT_POST, 1L);
@@ -394,6 +421,9 @@ private:
         curl_easy_setopt(curl.get(), CURLOPT_TIMEOUT, static_cast<long>(config_.timeout_seconds));
         curl_easy_setopt(curl.get(), CURLOPT_WRITEFUNCTION, curl_write_to_string);
         curl_easy_setopt(curl.get(), CURLOPT_WRITEDATA, &response_body);
+        curl_easy_setopt(curl.get(), CURLOPT_NOPROGRESS, 0L);
+        curl_easy_setopt(curl.get(), CURLOPT_XFERINFOFUNCTION, curl_progress_callback);
+        curl_easy_setopt(curl.get(), CURLOPT_XFERINFODATA, &request_context);
 
         curl_slist* headers = nullptr;
         headers = append_header(headers, "Content-Type: application/json");
@@ -406,6 +436,9 @@ private:
         curl_easy_getinfo(curl.get(), CURLINFO_RESPONSE_CODE, &status_code);
         if (headers != nullptr) {
             curl_slist_free_all(headers);
+        }
+        if (request_context.interrupted || code == CURLE_ABORTED_BY_CALLBACK) {
+            return ProviderResponse::error_response("Interrupted by user.");
         }
         if (code != CURLE_OK || status_code < 200 || status_code >= 300) {
             return ProviderResponse::error_response(curl_error_message(code, status_code, response_body));
@@ -425,6 +458,7 @@ private:
 
         CurlStreamContext context;
         context.on_delta = &on_delta;
+        context.provider = this;
         const auto url = api_base + "/chat/completions";
         curl_easy_setopt(curl.get(), CURLOPT_URL, url.c_str());
         curl_easy_setopt(curl.get(), CURLOPT_POST, 1L);
@@ -436,6 +470,9 @@ private:
         curl_easy_setopt(curl.get(), CURLOPT_LOW_SPEED_TIME, static_cast<long>((std::max)(config_.timeout_seconds, 300)));
         curl_easy_setopt(curl.get(), CURLOPT_WRITEFUNCTION, curl_write_stream);
         curl_easy_setopt(curl.get(), CURLOPT_WRITEDATA, &context);
+        curl_easy_setopt(curl.get(), CURLOPT_NOPROGRESS, 0L);
+        curl_easy_setopt(curl.get(), CURLOPT_XFERINFOFUNCTION, curl_stream_progress_callback);
+        curl_easy_setopt(curl.get(), CURLOPT_XFERINFODATA, &context);
 
         curl_slist* headers = nullptr;
         headers = append_header(headers, "Content-Type: application/json");
@@ -452,6 +489,9 @@ private:
         curl_easy_getinfo(curl.get(), CURLINFO_RESPONSE_CODE, &status_code);
         if (headers != nullptr) {
             curl_slist_free_all(headers);
+        }
+        if (context.interrupted || code == CURLE_ABORTED_BY_CALLBACK) {
+            return ProviderResponse::error_response("Interrupted by user.");
         }
         if (code != CURLE_OK || status_code < 200 || status_code >= 300) {
             return ProviderResponse::error_response(curl_error_message(code, status_code, context.raw));

@@ -46,6 +46,7 @@ public:
                 return interrupted_result(messages);
             }
             const auto tools_schema_json = tools_.tools_schema_json(tool_exposure_policy_);
+            provider_.set_interrupt_checker(interrupt_checker_);
             log_model_started();
             auto response = provider_.chat_stream(
                 messages,
@@ -180,6 +181,7 @@ public:
 
     void set_interrupt_checker(std::function<bool()> interrupt_checker) {
         interrupt_checker_ = std::move(interrupt_checker);
+        provider_.set_interrupt_checker(interrupt_checker_);
     }
 
 private:

@@ -324,12 +324,15 @@ private:
             AgentRunner runner(*provider, registry, approval, history_, config_.max_loops);
             runner.set_interrupt_checker([&]() {
                 sync_global_interrupt();
+                poll_escape_interrupt();
                 return interrupted_;
             });
             bool streamed_assistant = false;
             transcript_.finish_assistant_stream();
             status_ = TuiRuntimeStatus::Thinking;
             current_step_ = "preparing model request";
+            active_run_started_ = std::chrono::steady_clock::now();
+            active_run_visible_ = true;
             add_chat_line("agent", "thinking with " + config_.provider + " (" + std::to_string(config_.max_loops) + " max steps)");
             render();
             std::atomic_bool progress_done{false};
@@ -356,7 +359,7 @@ private:
                     }
                     add_flow_line(event);
                     if (progress_heartbeat_interval_.count() <= 0 && event.type == SessionEventType::ModelStarted) {
-                        transcript_.add_agent(current_step_ + " (0s elapsed)");
+                        transcript_.set_or_update_agent_progress("Working (0s; esc to interrupt) " + current_step_);
                     }
                     render();
                 },
@@ -377,6 +380,8 @@ private:
             if (progress_thread.joinable()) {
                 progress_thread.join();
             }
+            active_run_visible_ = false;
+            transcript_.finish_agent_progress();
 
             if (result.ok() && !streamed_assistant) {
                 status_ = TuiRuntimeStatus::Done;
@@ -429,7 +434,7 @@ private:
         }
         const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - started).count();
         const auto step = current_step_.empty() ? std::string{"working"} : current_step_;
-        transcript_.add_agent(step + " (" + std::to_string(elapsed) + "s elapsed)");
+        transcript_.set_or_update_agent_progress("Working (" + std::to_string(elapsed) + "s; esc to interrupt) " + step);
         render();
     }
 
@@ -455,6 +460,10 @@ private:
                  << "    " << ansi("38;5;245") << "Model" << ansi("0") << "  " << config_.model << "\n";
         *output_ << ansi("38;5;245") << "API" << ansi("0") << "       " << (config_.api_base.empty() ? "<not set>" : config_.api_base)
                  << "    " << ansi("38;5;245") << "Key" << ansi("0") << "  " << config_.api_key_status() << "\n\n";
+        const auto working = working_status_line();
+        if (!working.empty()) {
+            *output_ << ansi("38;5;245") << working << ansi("0") << "\n\n";
+        }
         *output_ << ansi("1;38;5;252") << "Transcript" << ansi("0") << "\n";
         if (transcript_.empty()) {
             *output_ << "  " << ansi("38;5;245") << "No messages yet. Type a prompt or /help." << ansi("0") << "\n";
@@ -471,6 +480,26 @@ private:
 
     void render_prompt_only() {
         *output_ << ansi("1;38;5;81") << "agent_tui>" << ansi("0") << " ";
+    }
+
+    void poll_escape_interrupt() {
+#ifdef _WIN32
+        if ((GetAsyncKeyState(VK_ESCAPE) & 0x0001) != 0) {
+            interrupted_ = true;
+        }
+#endif
+    }
+
+    std::string working_status_line() const {
+        if (!active_run_visible_ || (status_ != TuiRuntimeStatus::Thinking && status_ != TuiRuntimeStatus::RunningTool)) {
+            return {};
+        }
+        const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - active_run_started_).count();
+        auto line = "Working (" + std::to_string(elapsed) + "s; esc to interrupt)";
+        if (!current_step_.empty()) {
+            line += "  " + current_step_;
+        }
+        return line;
     }
 
     std::string normalize_input_line(const std::string& line) const {
@@ -829,6 +858,8 @@ private:
     std::mutex ui_mutex_;
     std::chrono::milliseconds progress_heartbeat_interval_{std::chrono::seconds(5)};
     std::string current_step_;
+    std::chrono::steady_clock::time_point active_run_started_{};
+    bool active_run_visible_ = false;
     TuiRuntimeStatus status_ = TuiRuntimeStatus::Idle;
     bool running_ = true;
     bool interrupted_ = false;

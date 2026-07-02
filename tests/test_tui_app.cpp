@@ -3,14 +3,27 @@
 
 #include <cassert>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <sstream>
 #include <string>
 
 using namespace agent_tui;
 
 namespace {
+
+void test_assert(bool condition, const char* expression, const char* file, int line) {
+    if (condition) {
+        return;
+    }
+    std::cerr << file << ":" << line << ": assertion failed: " << expression << '\n';
+    std::exit(1);
+}
+
+#undef assert
+#define assert(expression) test_assert((expression), #expression, __FILE__, __LINE__)
 
 std::filesystem::path make_test_root() {
     const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
@@ -224,6 +237,19 @@ void test_transcript_tracks_streaming_and_done_cells() {
     assert(join_lines(after_done).find("assistant streaming >") == std::string::npos);
 }
 
+void test_transcript_updates_progress_cell_in_place() {
+    TuiTranscript transcript;
+
+    transcript.add_user("write a game");
+    transcript.set_or_update_agent_progress("Working (5s; esc to interrupt)");
+    transcript.set_or_update_agent_progress("Working (10s; esc to interrupt)");
+
+    const auto rendered = join_lines(transcript.render_lines(120));
+    assert(rendered.find("Working (10s; esc to interrupt)") != std::string::npos);
+    assert(rendered.find("Working (5s; esc to interrupt)") == std::string::npos);
+    assert(count_occurrences(rendered, "agent > Working") == 1);
+}
+
 void test_system_prompt_includes_workspace_path() {
     const auto root = make_test_root();
     Workspace workspace(root);
@@ -281,7 +307,8 @@ void test_tui_emits_progress_heartbeat_during_agent_run() {
     const auto code = app.run();
 
     assert(code == 0);
-    assert(output.str().find("agent > waiting for model response") != std::string::npos);
+    assert(output.str().find("Working (") != std::string::npos);
+    assert(output.str().find("esc to interrupt") != std::string::npos);
     std::filesystem::remove_all(root);
 }
 
@@ -330,6 +357,7 @@ int main() {
     test_windows_code_page_input_can_be_normalized_to_utf8();
     test_terminal_wraps_long_unspaced_text();
     test_transcript_tracks_streaming_and_done_cells();
+    test_transcript_updates_progress_cell_in_place();
     test_system_prompt_includes_workspace_path();
     test_tui_runs_agent_tool_loop_for_code_demo();
     test_tui_emits_progress_heartbeat_during_agent_run();

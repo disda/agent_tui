@@ -84,6 +84,36 @@ public:
     std::string observed_tools_schema_json;
 };
 
+class InterruptAwareProvider final : public Provider {
+public:
+    void set_interrupt_checker(std::function<bool()> interrupt_checker) override {
+        interrupt_checker_ = std::move(interrupt_checker);
+    }
+
+    ProviderResponse chat(const std::vector<Message>&, const std::string& = {}) override {
+        chat_called = true;
+        return ProviderResponse::text_response("non-stream");
+    }
+
+    ProviderResponse chat_stream(const std::vector<Message>&,
+                                 const std::string&,
+                                 const std::function<void(const std::string&)>&) override {
+        stream_called = true;
+        if (interrupt_checker_ && interrupt_checker_()) {
+            saw_interrupt = true;
+            return ProviderResponse::error_response("Interrupted by user.");
+        }
+        return ProviderResponse::text_response("not interrupted");
+    }
+
+    bool chat_called = false;
+    bool stream_called = false;
+    bool saw_interrupt = false;
+
+private:
+    std::function<bool()> interrupt_checker_;
+};
+
 void test_single_tool_call_then_done() {
     ToolCall echo_call;
     echo_call.id = "call_1";
@@ -367,6 +397,25 @@ void test_agent_runner_stops_when_interrupt_checker_trips() {
     assert(provider.call_count() == 0);
 }
 
+void test_agent_runner_forwards_interrupt_checker_to_provider() {
+    InterruptAwareProvider provider;
+    ToolRegistry registry;
+    AgentRunner runner(provider, registry, 4);
+    int checks = 0;
+    runner.set_interrupt_checker([&]() {
+        ++checks;
+        return checks >= 2;
+    });
+
+    auto result = runner.run({Message{Role::User, "run", {}}});
+
+    assert(!result.ok());
+    assert(result.error.find("Interrupted") != std::string::npos);
+    assert(provider.saw_interrupt);
+    assert(provider.stream_called);
+    assert(!provider.chat_called);
+}
+
 int main() {
     test_single_tool_call_then_done();
     test_tool_not_found_goes_back_to_model();
@@ -380,5 +429,6 @@ int main() {
     test_agent_runner_emits_model_and_tool_lifecycle_events();
     test_agent_runner_stops_when_interrupt_requested();
     test_agent_runner_stops_when_interrupt_checker_trips();
+    test_agent_runner_forwards_interrupt_checker_to_provider();
     return 0;
 }

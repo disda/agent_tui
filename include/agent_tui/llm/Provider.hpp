@@ -48,6 +48,10 @@ class Provider {
 public:
     virtual ~Provider() = default;
 
+    virtual void set_interrupt_checker(std::function<bool()> interrupt_checker) {
+        interrupt_checker_ = std::move(interrupt_checker);
+    }
+
     virtual ProviderResponse chat(const std::vector<Message>& messages, const std::string& tools_schema_json = {}) = 0;
 
     virtual ProviderResponse chat_stream(const std::vector<Message>& messages,
@@ -59,6 +63,14 @@ public:
         }
         return response;
     }
+
+protected:
+    bool interrupted() const {
+        return interrupt_checker_ && interrupt_checker_();
+    }
+
+private:
+    std::function<bool()> interrupt_checker_;
 };
 
 }  // namespace agent_tui

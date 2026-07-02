@@ -34,11 +34,15 @@ public:
     void clear() {
         cells_.clear();
         active_assistant_ = npos();
+        active_progress_ = npos();
     }
 
     void add_system(std::string body) { add(TuiTranscriptCellKind::System, {}, std::move(body)); }
     void add_user(std::string body) { add(TuiTranscriptCellKind::User, {}, std::move(body)); }
-    void add_agent(std::string body) { add(TuiTranscriptCellKind::Agent, {}, std::move(body)); }
+    void add_agent(std::string body) {
+        finish_agent_progress();
+        add(TuiTranscriptCellKind::Agent, {}, std::move(body));
+    }
     void add_tool_call(std::string name, std::string summary) { add(TuiTranscriptCellKind::ToolCall, std::move(name), std::move(summary)); }
     void add_tool_result(std::string name, std::string summary) { add(TuiTranscriptCellKind::ToolResult, std::move(name), std::move(summary)); }
     void add_approval_required(std::string name, std::string summary) { add(TuiTranscriptCellKind::ApprovalRequired, std::move(name), std::move(summary)); }
@@ -46,7 +50,21 @@ public:
     void add_approval_feedback(std::string name, std::string summary) { add(TuiTranscriptCellKind::ApprovalFeedback, std::move(name), std::move(summary)); }
     void add_error(std::string body) { add(TuiTranscriptCellKind::Error, {}, std::move(body)); }
 
+    void set_or_update_agent_progress(std::string body) {
+        if (active_progress_ < cells_.size()) {
+            cells_[active_progress_].body = std::move(body);
+            return;
+        }
+        cells_.push_back(TuiTranscriptCell{TuiTranscriptCellKind::Agent, {}, std::move(body)});
+        active_progress_ = cells_.size() - 1;
+    }
+
+    void finish_agent_progress() {
+        active_progress_ = npos();
+    }
+
     void start_assistant_stream() {
+        finish_agent_progress();
         if (active_assistant_ >= cells_.size()) {
             add(TuiTranscriptCellKind::AssistantStreaming, {}, {});
             active_assistant_ = cells_.size() - 1;
@@ -66,6 +84,7 @@ public:
     }
 
     void add_assistant_done(std::string body) {
+        finish_agent_progress();
         add(TuiTranscriptCellKind::AssistantDone, {}, std::move(body));
         active_assistant_ = npos();
     }
@@ -186,6 +205,7 @@ private:
     static constexpr std::size_t npos() { return static_cast<std::size_t>(-1); }
 
     void add(TuiTranscriptCellKind kind, std::string title, std::string body) {
+        finish_agent_progress();
         cells_.push_back(TuiTranscriptCell{kind, std::move(title), std::move(body)});
     }
 
@@ -260,6 +280,7 @@ private:
 
     std::vector<TuiTranscriptCell> cells_;
     std::size_t active_assistant_ = npos();
+    std::size_t active_progress_ = npos();
 };
 
 }  // namespace agent_tui
